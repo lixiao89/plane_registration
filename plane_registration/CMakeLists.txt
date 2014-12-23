@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
   trajectory_msgs
   kdl_parser
   kdl_conversions
+  eigen
 )
 
 ## System dependencies are found with CMake's conventions
@@ -42,8 +43,10 @@ include_directories(
 
 ## Declare a cpp executable
 add_executable(wam_move src/wam_move.cpp)
+add_executable(plane_registration src/plane_registration.cpp)
+
 target_link_libraries(wam_move
   ${catkin_LIBRARIES}
 )
-
+target_link_libraries(plane_registration ${catkin_LIBRARIES})
 
