@@ -75,15 +75,20 @@
 
           
 #if 1
+	  // both initialized to zero
           Vector eevel;
           Vector eerot;
        
           if( ctrl_type_ == CTRL_HYBRID )
         {
-          eevel.z( -0.01 );
+	  // eevel.z( -0.01 );
+	  
+	  // move in the x direction in cutter frame
+	  eevel = -cmd_frame_.M.UnitX();
+	  
         }
-
-          double vel_gain = 0.1;
+          
+	  double vel_gain = 0.001;
           double rot_gain = 0.4;
 
           Twist cmd_twist;
@@ -91,10 +96,10 @@
           cmd_twist.rot = rot_gain * eerot;
 
           // ignore some axes
-          cmd_twist.vel(0) = 0.0;  // ignore x
+	  // cmd_twist.vel(0) = 0.0;  // ignore x
 	 
        	  // lock all rotations in base frame
-	  cmd_twist.rot(0) = 0.0 
+	  cmd_twist.rot(0) = 0.0; 
           cmd_twist.rot(1) = 0.0;  
           cmd_twist.rot(2) = 0.0;  
           //cmd_twist.rot(0) = 0.0; //ignore x
@@ -278,7 +283,7 @@ private:
     cmd_frame_ = tip_frame_;
 
     double xerr = 0*PI/180;
-    double yerr = 10*PI/180;
+    double yerr = 30*PI/180;
     double zerr = 0*PI/180;
 
     Rotation roterr;
