@@ -34,7 +34,7 @@ public:
   PlaneRegistration(ros::NodeHandle* node):
     node_(node),
     est_state(IDLE),
-    process_data_num(50)
+    process_data_num(100)
   {
     // pubs
     pub_state_ = node->advertise<std_msgs::String>("/dvrk_psm1/set_robot_state", 10);
@@ -45,7 +45,7 @@ public:
     sub_key_ = node->subscribe("/hybrid/key", 1, &PlaneRegistration::cb_key, this);
     sub_jr3_ = node->subscribe("/jr3/wrench", 1, &PlaneRegistration::cb_jr3, this);
     sub_states_ = node->subscribe("/gazebo/barrett_manager/wam/joint_states", 1, &PlaneRegistration::cb_jnt_states, this);
-    sub_plreg_pts_ = node->subscribe("/plreg/ptslocation", 1, &PlaneRegistration::cb_ptsloc, this);
+    sub_plreg_pts_ = node->subscribe("/plreg/ptlocation", 1, &PlaneRegistration::cb_ptsloc, this);
     
     init_kdl_robot();
 
@@ -160,6 +160,9 @@ private:
 
     params = (X.transpose()*X).inverse()*X.transpose()*Y;
 
+    if ( isnan(params(0)) ){
+      params(0) = 0;
+    }
     return params;
 
   }

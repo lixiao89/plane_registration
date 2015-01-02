@@ -18,6 +18,15 @@
 
 #define PI 3.1415926
 
+    // TODO
+    //  - add joint pos callback
+    //  - test different types of ik solvers
+
+
+    // Steps :
+    //  - r: set WAM to ready state
+    //  - h: start hybrid controller
+
 
 #define DEBUG 0
 
@@ -72,12 +81,27 @@
         // MODE
         if (ctrl_type_ == CTRL_HYBRID || ctrl_type_ == CTRL_START_HYBRID)
         {
+    //      ROS_INFO("in hybrid control");
+          // compute cmd frame
+    //      static KDL::Vector inc(0, 0, 0.001);
+    //      cmd_frame_.p += inc;
+
+    //      if (cmd_frame_.p.z() < 0.6) {
+    //        inc = KDL::Vector(0, 0, 0.001);
+    //      }
+    //      else if (cmd_frame_.p.z() > 0.8) {
+    //        inc = KDL::Vector(0, 0, -0.001);
+    //      }
 
           
 #if 1
           Vector eevel;
           Vector eerot;
-       
+          // if( ctrl_type_ == CTRL_START_HYBRID )
+          // 	{
+          // 	  Vector eevel( 0, 0, 0 );
+          // 	  Vector eerot( 0, 0, 0 );
+          // 	}
           if( ctrl_type_ == CTRL_HYBRID )
         {
           eevel.z( -0.01 );
@@ -85,7 +109,7 @@
 
           double vel_gain = 0.1;
           double rot_gain = 0.4;
-
+          //Twist cmd_twist = twist_;
           Twist cmd_twist;
           cmd_twist.vel = vel_gain * eevel;
           cmd_twist.rot = rot_gain * eerot;
@@ -93,10 +117,12 @@
           // ignore some axes
           cmd_twist.vel(0) = 0.0;  // ignore x
 	 
-       	  // lock all rotations in base frame
-	  cmd_twist.rot(0) = 0.0 
-          cmd_twist.rot(1) = 0.0;  
-          cmd_twist.rot(2) = 0.0;  
+
+	  
+	  // lock all rotations
+	  //cmd_twist.rot(0) = 0.0 
+          cmd_twist.rot(1) = 0.0;  // ignore y
+          cmd_twist.rot(2) = 0.0;  // ignore z
           //cmd_twist.rot(0) = 0.0; //ignore x
         
           cmd_twist = cmd_frame_.M.Inverse(cmd_twist);
