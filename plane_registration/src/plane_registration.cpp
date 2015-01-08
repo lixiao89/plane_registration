@@ -39,6 +39,7 @@ public:
     // pubs
     pub_state_ = node->advertise<std_msgs::String>("/dvrk_psm1/set_robot_state", 10);
     pub_roterr_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/oriErr", 10);
+   
     //   pub_err_gt_ = node->advertise<geometry_msgs::Vector3>("/plreg/errGroundTruth", 10);
 
     // subs
@@ -79,14 +80,16 @@ public:
       cutter_ori = atan2( cutterX_ori[0], cutterX_ori[2] );
       yerr = cutter_ori - plane_ori;
 
-      std::cout<<"line: "<<plane_ori<<std::endl;
+      //std::cout<<"line: "<<plane_ori<<std::endl;
 
       // publish orientation error
       geometry_msgs::Vector3 ori_err;
       ori_err.x = 0;
-      ori_err.y = yerr*180/PI;
+      ori_err.y = 180 - yerr*180/PI;
       ori_err.z = 0;
       pub_roterr_est_.publish( ori_err );
+
+      std::cout<<"y error: "<< ori_err.y << std::endl;
     } 
   }
 

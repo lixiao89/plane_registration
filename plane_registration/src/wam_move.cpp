@@ -32,7 +32,8 @@
         CTRL_READY,
         CTRL_ERROR_POSE,
         CTRL_START_HYBRID,
-        CTRL_HYBRID
+        CTRL_HYBRID,
+	CTRL_CORRECT
       };
 
       WamMove(ros::NodeHandle* node):
@@ -50,7 +51,7 @@
         sub_jr3_ = node->subscribe("/jr3/wrench", 1, &WamMove::cb_jr3, this);
         sub_key_ = node->subscribe("/hybrid/key", 1, &WamMove::cb_key, this);
         sub_states_ = node->subscribe("/gazebo/barrett_manager/wam/joint_states", 1, &WamMove::cb_jnt_states, this);
-
+	sub_roterr_ = node->subscribe("/plreg/oriErr", 1, &WamMove::cb_oriErr, this);
         // class memeber
         init_kdl_robot();
 
@@ -70,11 +71,10 @@
 	pub_err_gt_.publish( err_gt );
 
         // MODE
-        if (ctrl_type_ == CTRL_HYBRID || ctrl_type_ == CTRL_START_HYBRID)
+        if (ctrl_type_ == CTRL_HYBRID || ctrl_type_ == CTRL_START_HYBRID || ctrl_type_ == CTRL_CORRECT)
         {
 
           
-#if 1
 	  // both initialized to zero
           Vector eevel;
           Vector eerot;
@@ -84,9 +84,8 @@
 	  // eevel.z( -0.01 );
 	  
 	  // move in the x direction in cutter frame
-	  eevel = -cmd_frame_.M.UnitX();
-	  
-        }
+	  eevel = cmd_frame_.M.UnitX();
+	}
           
 	  double vel_gain = 0.001;
           double rot_gain = 0.4;
@@ -95,18 +94,18 @@
           cmd_twist.vel = vel_gain * eevel;
           cmd_twist.rot = rot_gain * eerot;
 
+	  //std::cout<<eevel<<std::endl;
           // ignore some axes
 	  // cmd_twist.vel(0) = 0.0;  // ignore x
 	 
        	  // lock all rotations in base frame
 	  cmd_twist.rot(0) = 0.0; 
           cmd_twist.rot(1) = 0.0;  
-          cmd_twist.rot(2) = 0.0;  
+          //cmd_twist.rot(2) = 0.0;  
           //cmd_twist.rot(0) = 0.0; //ignore x
         
           cmd_twist = cmd_frame_.M.Inverse(cmd_twist);
           cmd_frame_.Integrate(cmd_twist, 50);
-#endif
 
 
           // force control
@@ -120,7 +119,9 @@
           if (fabs(cmd_v) < 0.00005) cmd_v = 0.0;
 
           //------ for plane registration -------------
-          std_msgs::Int32 plreg_msg;
+          
+	  // for estimating rotation error around y
+	  std_msgs::Int32 plreg_msg;
           if( last_hpf_cmd > 0 || cmd_v < 0){
               plreg_msg.data = 1;
           }
@@ -130,10 +131,20 @@
           }
             
           pub_plane_reg_pts_.publish( plreg_msg );
+
+
+	  Rotation correction_rotation;
+	  // correcting around y
+	  if( ctrl_type_ == CTRL_CORRECT ){
+	    correction_rotation.DoRotY( correction_vel( oriErr(1) ) );
+	    std::cout<<oriErr(1)<<", "<<correction_vel( oriErr(1) )<<std::endl;
+	  }
+	  Frame correction_frame( correction_rotation );
+
           //----------------------------
           Frame force_frame;
           force_frame.p(2) = cmd_v;
-          cmd_frame_ = cmd_frame_ * force_frame;
+          cmd_frame_ = cmd_frame_ * force_frame * correction_frame;
 
           // do ik
           ik_solver_->CartToJnt(jnt_pos_, cmd_frame_, jnt_cmd_);
@@ -147,22 +158,22 @@
             msg_jnt_cmd.positions[i] = jnt_cmd_(i);
       }
       pub_jnt_cmd_.publish(msg_jnt_cmd);
-    }
+     }
   }
 
 private:
 
-  // void cb_joy(const sensor_msgs::Joy &msg)
-  // {
-  //   using namespace KDL;
-  //   twist_.vel(0) = msg.axes[2];
-  //   twist_.vel(1) = msg.axes[1];
-  //   twist_.vel(2) = -msg.axes[0];
-  //   twist_.rot(0) = msg.axes[5];
-  //   twist_.rot(1) = msg.axes[4];
-  //   twist_.rot(2) = -msg.axes[3];
-  // }
+      double correction_vel(const double& err_angle )
+      {
+	double cmd_v = -0.0001 * err_angle;
+	if (cmd_v > 0.0001) cmd_v = 0.0001;
+	if (cmd_v < -0.0001) cmd_v = -0.0001;
+	if (fabs(cmd_v) < 0.00005) cmd_v = 0.0;
 
+	return cmd_v;
+      }
+
+ 
   void cb_jr3(const geometry_msgs::WrenchStamped &msg)
   {
     tf::wrenchMsgToKDL(msg.wrench, jr3_wrench_);
@@ -173,12 +184,14 @@ private:
     ROS_INFO_STREAM("Key = " << msg.data);
     if (msg.data == "r")
       ctrl_ready();
-    else if (msg.data == "ep")
+    else if (msg.data == "ep")// move to error position
       ctrl_errorpos();
-    else if (msg.data == "sh")
+    else if (msg.data == "sh")// moving to position with only hybrid control
       ctrl_start_hybrid();
-    else if (msg.data == "h")
+    else if (msg.data == "h")// start moving with control
       ctrl_hybrid();
+    else if (msg.data == "c")// start correcting
+      ctrl_start_correcting();
     else
       ROS_ERROR("Unsupported Commands");
   }
@@ -200,6 +213,15 @@ private:
     std::cout << std::endl;
 #endif
   }
+
+   
+   void cb_oriErr(const geometry_msgs::Vector3 &msg)
+   {
+     oriErr(0) = msg.x;
+     oriErr(1) = msg.y;
+     oriErr(2) = msg.z;
+   }
+      
 
   void init_kdl_robot()
   {
@@ -249,11 +271,11 @@ private:
     // KDL Solvers
     fk_solver_.reset(new KDL::ChainFkSolverPos_recursive(robot_));
     ik_solver_.reset(
-          new KDL::ChainIkSolverPos_LMA(
-            robot_,
-            1E-5,
-            500,
-            1E-15));
+		     new KDL::ChainIkSolverPos_LMA(
+					robot_,
+					1E-5,
+					500,
+					1E-15));
   }
 
   void ctrl_ready()
@@ -283,7 +305,7 @@ private:
     cmd_frame_ = tip_frame_;
 
     double xerr = 0*PI/180;
-    double yerr = 30*PI/180;
+    double yerr = 15*PI/180;
     double zerr = 0*PI/180;
 
     Rotation roterr;
@@ -292,7 +314,7 @@ private:
     roterr.DoRotZ( zerr );
 
     Frame err_frame_( roterr );
-
+    
     cmd_frame_ = cmd_frame_*err_frame_;
     
     // do ik
@@ -315,9 +337,9 @@ private:
 
 
     //std::cout<<"tip frame: "<<tip_frame_<<std::endl;
-    std::cout<<"x vector: "<<cutterX_ori<<std::endl;
-    std::cout<<"y vector: "<<cutterY_ori<<std::endl;
-    std::cout<<"z vector: "<<cutterZ_ori<<std::endl;
+    // std::cout<<"x vector: "<<cutterX_ori<<std::endl;
+    // std::cout<<"y vector: "<<cutterY_ori<<std::endl;
+    // std::cout<<"z vector: "<<cutterZ_ori<<std::endl;
 
     err_gt.x = 0;
     err_gt.y = atan2( cutterX_ori[0], cutterX_ori[2] )*180/PI;
@@ -346,6 +368,19 @@ private:
     cmd_frame_ = tip_frame_;
   }
 
+
+  void ctrl_start_correcting()
+  {
+    // enter hybrid
+    ctrl_type_ = CTRL_CORRECT;
+    fk_solver_->JntToCart(jnt_pos_, tip_frame_);
+    std::cout << "tip pose = \n" << tip_frame_ << std::endl;
+
+    // sync cmd frame
+    cmd_frame_ = tip_frame_;
+  }
+
+
   // ros stuff
   ros::NodeHandle* node_;
   ros::Publisher pub_state_;
@@ -356,6 +391,7 @@ private:
   ros::Subscriber sub_jr3_;
   ros::Subscriber sub_key_;
   ros::Subscriber sub_states_;
+  ros::Subscriber sub_roterr_;
 
   // joint states
   JntArray jnt_pos_;   // jnt pos current
@@ -390,6 +426,8 @@ private:
   std_msgs::Int32 plreg_pts;
   double last_hpf_cmd;
   geometry_msgs::Vector3 err_gt;
+  // store orientation error information published from plane_registration node
+  Vector oriErr;
 };
 
 
