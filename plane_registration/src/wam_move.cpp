@@ -15,7 +15,7 @@
 #include <std_msgs/Int32.h>
 
 #include <math.h>   // PI
-
+#include <vector>
 #define PI 3.1415926
 
 
@@ -59,6 +59,10 @@
 	err_gt.x = 0;
 	err_gt.y = 0;
 	err_gt.z = 0;
+
+
+	// plane registration
+	avg_err_y.push_back( 0 );
       }
 
       virtual ~WamMove(){}
@@ -136,11 +140,17 @@
 	  Rotation correction_rotation;
 	  // correcting around y
 	  if( ctrl_type_ == CTRL_CORRECT ){
-	    correction_rotation.DoRotY( correction_vel( oriErr(1) ) );
-	    std::cout<<oriErr(1)<<", "<<correction_vel( oriErr(1) )<<std::endl;
+	    double avgErrY = average_error( oriErr(1), avg_err_y, 30 );
+	    correction_rotation.DoRotY( correction_vel( avgErrY ) );
+	    std::cout<<avgErrY<<", "<<correction_vel( avgErrY )<<std::endl;
 	  }
 	  Frame correction_frame( correction_rotation );
 
+	  // when correcting misorientation, arm doesn't move forward
+	  // temporary fix: after correcting to with acceptable  error bound, press 'h' to resume movement
+	  if ( ctrl_type_ == CTRL_HYBRID ){
+	    correction_frame.Identity();
+	  }
           //----------------------------
           Frame force_frame;
           force_frame.p(2) = cmd_v;
@@ -305,7 +315,7 @@ private:
     cmd_frame_ = tip_frame_;
 
     double xerr = 0*PI/180;
-    double yerr = 15*PI/180;
+    double yerr = -15*PI/180;
     double zerr = 0*PI/180;
 
     Rotation roterr;
@@ -378,8 +388,24 @@ private:
 
     // sync cmd frame
     cmd_frame_ = tip_frame_;
-  }
+  } 
 
+
+      double average_error( const double err_angle, std::vector<double>& err_vector, const int window_size )
+      {
+	err_vector.push_back( err_angle );
+	if ( err_vector.size() > window_size ){
+	  err_vector.erase( err_vector.begin() );
+	}
+	
+	double sum = 0;
+	for ( int i = 0; i < err_vector.size(); ++i ){
+	  sum += err_vector.at(i);
+	}
+
+	double avg_error = sum / window_size;
+	return avg_error;
+      }
 
   // ros stuff
   ros::NodeHandle* node_;
@@ -428,6 +454,8 @@ private:
   geometry_msgs::Vector3 err_gt;
   // store orientation error information published from plane_registration node
   Vector oriErr;
+  // store error and calculate average
+  std::vector<double> avg_err_y;
 };
 
 

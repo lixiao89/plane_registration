@@ -85,7 +85,8 @@ public:
       // publish orientation error
       geometry_msgs::Vector3 ori_err;
       ori_err.x = 0;
-      ori_err.y = 180 - yerr*180/PI;
+      if ( yerr*180/PI > 0 )     { ori_err.y = 180 - yerr*180/PI; }
+      if ( yerr*180/PI < 0 )     { ori_err.y = -( 180 + yerr*180/PI); }
       ori_err.z = 0;
       pub_roterr_est_.publish( ori_err );
 
