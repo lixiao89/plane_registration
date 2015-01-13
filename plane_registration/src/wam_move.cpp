@@ -13,6 +13,8 @@
 #include <trajectory_msgs/JointTrajectoryPoint.h>
 #include <kdl_conversions/kdl_msg.h>
 #include <std_msgs/Int32.h>
+#include <sstream>
+
 
 #include <math.h>   // PI
 #include <vector>
@@ -33,14 +35,15 @@
         CTRL_ERROR_POSE,
         CTRL_START_HYBRID,
         CTRL_HYBRID,
-	CTRL_CORRECT
+	CTRL_CORRECT,
+	CTRL_SINUSOID
       };
 
       WamMove(ros::NodeHandle* node):
         node_(node),
         ctrl_type_(CTRL_IDLE)
       {
-        // pubs
+        // pubs 
         pub_state_ = node->advertise<std_msgs::String>("/dvrk_psm1/set_robot_state", 10);
         pub_jnt_cmd_ = node->advertise<trajectory_msgs::JointTrajectoryPoint>("/gazebo/traj_rml/joint_traj_point_cmd", 1);
         pub_plane_reg_pts_ = node->advertise<std_msgs::Int32>("/plreg/ptlocation", 10);
@@ -63,6 +66,8 @@
 
 	// plane registration
 	avg_err_y.push_back( 0 );
+	path = "/home/xli4217/wamdata.txt";
+	ofs.open( path, std::ofstream::out );
       }
 
       virtual ~WamMove(){}
@@ -75,7 +80,7 @@
 	pub_err_gt_.publish( err_gt );
 
         // MODE
-        if (ctrl_type_ == CTRL_HYBRID || ctrl_type_ == CTRL_START_HYBRID || ctrl_type_ == CTRL_CORRECT)
+        if (ctrl_type_ == CTRL_HYBRID || ctrl_type_ == CTRL_START_HYBRID || ctrl_type_ == CTRL_CORRECT || ctrl_type_ == CTRL_SINUSOID)
         {
 
           
@@ -113,7 +118,18 @@
 
 
           // force control
-          double cmd_force = -4.0;
+	  
+	  double cmd_force;
+	  if ( ctrl_type_ == CTRL_START_HYBRID || ctrl_type_ == CTRL_HYBRID ){
+	    cmd_force = -4.0;
+	  }
+	  if ( ctrl_type_ == CTRL_SINUSOID ){
+	    double currTime = ros::Time::now().toSec();
+	    double freq = 10;
+	    cmd_force = -2.0 * sin( 2*PI*freq*currTime ) - 2.0;
+	    //std::cout<<cmd_force<<std::endl;
+	    ofs << jr3_wrench_.torque.x() << std::endl; 
+	  }
           double err_force = cmd_force - jr3_wrench_.force.z();
           double cmd_v = 0.0;
 
@@ -196,12 +212,19 @@ private:
       ctrl_ready();
     else if (msg.data == "ep")// move to error position
       ctrl_errorpos();
+   
     else if (msg.data == "sh")// moving to position with only hybrid control
       ctrl_start_hybrid();
+    
+    else if (msg.data == "ss")
+       ctrl_start_sinusoid();
+      
     else if (msg.data == "h")// start moving with control
       ctrl_hybrid();
+   
     else if (msg.data == "c")// start correcting
       ctrl_start_correcting();
+    
     else
       ROS_ERROR("Unsupported Commands");
   }
@@ -315,7 +338,7 @@ private:
     cmd_frame_ = tip_frame_;
 
     double xerr = 0*PI/180;
-    double yerr = -15*PI/180;
+    double yerr = 5*PI/180;
     double zerr = 0*PI/180;
 
     Rotation roterr;
@@ -367,6 +390,18 @@ private:
     cmd_frame_ = tip_frame_;
   }
 
+void ctrl_start_sinusoid()
+  {
+    // enter hybrid
+    ctrl_type_ = CTRL_SINUSOID;
+    fk_solver_->JntToCart(jnt_pos_, tip_frame_);
+    std::cout << "tip pose = \n" << tip_frame_ << std::endl;
+
+    // sync cmd frame
+    cmd_frame_ = tip_frame_;
+  }
+
+
   void ctrl_hybrid()
   {
     // enter hybrid
@@ -389,6 +424,7 @@ private:
     // sync cmd frame
     cmd_frame_ = tip_frame_;
   } 
+
 
 
       double average_error( const double err_angle, std::vector<double>& err_vector, const int window_size )
@@ -456,6 +492,10 @@ private:
   Vector oriErr;
   // store error and calculate average
   std::vector<double> avg_err_y;
+
+      // temporary printout for matlab
+      const char* path;
+      std::ofstream ofs;
 };
 
 

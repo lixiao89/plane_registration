@@ -15,6 +15,8 @@
 #include <std_msgs/Int32.h>
 #include <math.h>   // PI
 #include <eigen3/Eigen/Dense>
+
+
 #define PI 3.1415926
 
 #define DEBUG 0
@@ -37,7 +39,6 @@ public:
     process_data_num(100)
   {
     // pubs
-    pub_state_ = node->advertise<std_msgs::String>("/dvrk_psm1/set_robot_state", 10);
     pub_roterr_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/oriErr", 10);
    
     //   pub_err_gt_ = node->advertise<geometry_msgs::Vector3>("/plreg/errGroundTruth", 10);
@@ -230,7 +231,6 @@ private:
 
   // ros stuff
   ros::NodeHandle* node_;
-  ros::Publisher pub_state_;
   ros::Subscriber sub_jr3_;
   ros::Subscriber sub_states_;
 
