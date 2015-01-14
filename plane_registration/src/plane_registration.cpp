@@ -33,15 +33,16 @@ public:
     ESTIMATE
   };
 
-  PlaneRegistration(ros::NodeHandle* node):
+  PlaneRegistration( ros::NodeHandle* node ): 
     node_(node),
     est_state(IDLE),
-    process_data_num(100)
+    process_data_num(50),
+    reset_start_point( 0 ),
+    error_last( 0 ),
+    ptsloclast( 0 )
   {
-    // pubs
+    // pubs 
     pub_roterr_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/oriErr", 10);
-   
-    //   pub_err_gt_ = node->advertise<geometry_msgs::Vector3>("/plreg/errGroundTruth", 10);
 
     // subs
     sub_key_ = node->subscribe("/hybrid/key", 1, &PlaneRegistration::cb_key, this);
@@ -51,8 +52,10 @@ public:
     
     init_kdl_robot();
 
-
+    // for plane registration
     ptsloc = 0;
+    plane_ori_vectorX.push_back( 0 );
+    plane_ori_vectorY.push_back( 0 );
   }
 
   virtual ~PlaneRegistration(){}
@@ -60,48 +63,24 @@ public:
   void update()
   {
     if ( est_state == ESTIMATE ){
-      
-      Eigen::Vector2d data_line( 0, 0 );
-      double plane_ori;
-      double cutter_ori;
-      double yerr;
-      fk_solver_->JntToCart( jnt_pos_, tip_frame_ );
-
-      if ( ptsloc != 0 ){
-	data_line = EvaluateMovingWindowLS( tip_frame_.p[2],
-					    tip_frame_.p[0],
-					    cutterZ,
-					    cutterX,
-					    process_data_num);	
-      } 
-      
-      Vector cutterX_ori = tip_frame_.M.UnitX();
-      Vector cutterZ_ori = tip_frame_.M.UnitZ();
-      plane_ori = atan2( data_line(0)*10 + data_line(1), 10 );
-      cutter_ori = atan2( cutterX_ori[0], cutterX_ori[2] );
-      yerr = cutter_ori - plane_ori;
-
-      //std::cout<<"line: "<<plane_ori<<std::endl;
-
-      // publish orientation error
-      geometry_msgs::Vector3 ori_err;
-      ori_err.x = 0;
-      if ( yerr*180/PI > 0 )     { ori_err.y = 180 - yerr*180/PI; }
-      if ( yerr*180/PI < 0 )     { ori_err.y = -( 180 + yerr*180/PI); }
-      ori_err.z = 0;
-      pub_roterr_est_.publish( ori_err );
-
-      std::cout<<"y error: "<< ori_err.y << std::endl;
+      orientation_error_estimate();
     } 
   }
 
 private:
 
+
+  // Process keyboard events
   void cb_key(const std_msgs::String &msg){
-    if (msg.data == "p")
+    if (msg.data == "p"){
       est_state = ESTIMATE;
+      reset_start_point = 1;
+    }
+    
   }
 
+
+  // ---------- Subscriber Callbacks ----------------
   void cb_jr3(const geometry_msgs::WrenchStamped &msg)
   {
     tf::wrenchMsgToKDL(msg.wrench, jr3_wrench_);
@@ -119,11 +98,12 @@ private:
       jnt_vel_(i) = msg.velocity.at(i);
     }
 
-#if DEBUG
-    std::cout << "pos: " << jnt_pos_.data.transpose() << std::endl;
-    std::cout << "vel: " << jnt_vel_.data.transpose() << std::endl;
-    std::cout << std::endl;
-#endif
+    if ( reset_start_point == 1 ){
+      fk_solver_->JntToCart( jnt_pos_, tip_frame_ );
+      startPoint << tip_frame_.p[0], tip_frame_.p[1], tip_frame_.p[2];
+      reset_start_point = 0;
+    }
+
   }
 
 
@@ -131,6 +111,164 @@ private:
     {
       ptsloc = msg.data;
     }
+
+
+  // FUNCTION RESPONSIBLE FOR ESTIMATION
+  void orientation_error_estimate(){
+    
+    // stores coefficients for the estimated line on the cutting surface
+    Eigen::Vector2d data_line( 0, 0 );
+    geometry_msgs::Vector3 ori_err;
+
+    fk_solver_->JntToCart( jnt_pos_, tip_frame_ );
+
+    // estimate x rotation error if ptsloc = 1, ( comparing local y axis )
+    if ( ptsloc == 1 ){
+ 
+      Eigen::Vector2d start_point( startPoint(1), startPoint(0) );
+      Eigen::Vector2d curr_point( tip_frame_.p[1], tip_frame_.p[0] );
+
+      double plane_ori = average_plane_orientation1D( start_point,
+						      curr_point,
+						      plane_ori_vectorX,
+						      process_data_num );
+        
+      Vector cutterY_ori = tip_frame_.M.UnitY();
+      double cutter_y_angle = atan2( cutterY_ori[0], cutterY_ori[2] );
+  
+      if ( cutter_y_angle < 0 ) { cutter_y_angle += 2*PI; }
+
+      double error_before_avg = plane_ori - cutter_y_angle;
+
+      double error_after_avg = average( error_before_avg, err_vectorX, 20 );
+	
+      ori_err.x = error_after_avg*180 / PI;
+      ori_err.y = 0;
+      ori_err.z = 0;
+      pub_roterr_est_.publish( ori_err );
+      
+      std::cout<<"x error: "<< ori_err.x << std::endl;
+ 
+      error_last = ori_err.x;
+      ptsloclast = 1;
+   
+    }     
+    // estimate y rotation error if ptsloc = 2 ( comparing local x axis )
+    if ( ptsloc == 2 ){
+     
+      Eigen::Vector2d start_point( startPoint(2), startPoint(0) );
+      Eigen::Vector2d curr_point( tip_frame_.p[2], tip_frame_.p[0] );
+
+      double plane_ori = average_plane_orientation1D( start_point,
+						      curr_point,
+						      plane_ori_vectorY,
+						      process_data_num );
+        
+      Vector cutterX_ori = tip_frame_.M.UnitX();
+      double cutter_x_angle = atan2( cutterX_ori[0], cutterX_ori[2] );
+  
+      if ( cutter_x_angle < 0 ) { cutter_x_angle += 2*PI; }
+      
+      double error_before_avg = plane_ori - cutter_x_angle;
+
+      double error_after_avg = average( error_before_avg, err_vectorY, 20 );
+
+
+      ori_err.x = 0;
+      ori_err.y = error_after_avg*180 / PI;
+      ori_err.z = 0;
+      pub_roterr_est_.publish( ori_err );
+      
+      std::cout<<"y error: "<< ori_err.y << std::endl;
+      
+      error_last = ori_err.y;
+      ptsloclast = 2;
+      
+      // data_line = EvaluateMovingWindowLS( tip_frame_.p[2],
+      // 					  tip_frame_.p[0],
+      // 					  cutterZ,
+      // 					  cutterX,
+      // 					  process_data_num);	
+     
+      // Vector cutterX_ori = tip_frame_.M.UnitX();
+      // plane_ori = atan2( data_line(0)*10 + data_line(1), 10 );
+      // cutter_ori = atan2( cutterX_ori[0], cutterX_ori[2] );
+      // yerr = cutter_ori - plane_ori;
+      
+      // // publish orientation error
+      // geometry_msgs::Vector3 ori_err;
+      // ori_err.x = 0;
+      // if ( yerr*180/PI > 0 )     { ori_err.y = 180 - yerr*180/PI; }
+      // if ( yerr*180/PI < 0 )     { ori_err.y = -( 180 + yerr*180/PI); }
+      // ori_err.z = 0;
+      // pub_roterr_est_.publish( ori_err );
+      
+      // std::cout<<"y error: "<< ori_err.y << std::endl;
+
+      
+    
+    }
+    if ( ptsloc == 0 ){
+      if ( ptsloclast == 1 ){
+	ori_err.x = error_last;
+	ori_err.y = 0;
+	ori_err.z = 0;
+	pub_roterr_est_.publish( ori_err );
+     	
+      }
+      if ( ptsloclast == 2 ){
+	ori_err.x = 0;
+	ori_err.y = error_last;
+	ori_err.z = 0;
+	pub_roterr_est_.publish( ori_err );
+      }
+    }     
+
+    
+  }
+
+
+  double average_plane_orientation1D( const Eigen::Vector2d& startPoint,
+				      const Eigen::Vector2d& currPoint,
+				      std::vector<double>& plane_ori_vector,
+				      const int plane_ori_est_size ){
+
+    if ( plane_ori_vector.size() > plane_ori_est_size ){
+      plane_ori_vector.erase( plane_ori_vector.begin() );
+    }
+
+    Eigen::Vector2d currVector = currPoint - startPoint;
+    double currAngle = atan2( currVector(1), currVector(0) );
+    if ( currAngle < 0 )  { currAngle += 2*PI; };
+
+    double result = average( currAngle,
+			     plane_ori_vector,
+			     plane_ori_est_size );
+
+    return result;
+
+  }
+
+
+  double average( const double err_angleX,
+		  std::vector<double>& err_vectorX,
+		  const int window_size )
+  {
+    err_vectorX.push_back( err_angleX );
+    if ( err_vectorX.size() > window_size ){
+      err_vectorX.erase( err_vectorX.begin() );
+    }
+    
+    double sumX = 0;
+    for ( int i = 0; i < err_vectorX.size(); ++i ){
+      sumX += err_vectorX.at(i);
+    }
+
+    double avg_errorX = sumX / window_size;
+    return avg_errorX;
+  }
+
+
 
   Eigen::Vector2d EvaluateMovingWindowLS(const double& x,
 					 const double& y,
@@ -269,6 +407,18 @@ private:
   std::vector<double> cutterX;
   std::vector<double> cutterY;
   std::vector<double> cutterZ;
+
+  std::vector<double> err_vectorX;
+  std::vector<double> err_vectorY;
+
+  std::vector<double> plane_ori_vectorX;
+  std::vector<double> plane_ori_vectorY;
+  
+  int reset_start_point;
+  Eigen::Vector3d startPoint;
+
+  int ptsloclast;
+  double error_last;
   //----------------------------------------
 };
 
