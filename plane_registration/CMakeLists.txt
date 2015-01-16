@@ -43,10 +43,15 @@ include_directories(
 
 ## Declare a cpp executable
 add_executable(wam_move src/wam_move.cpp)
-add_executable(plane_registration src/plane_registration.cpp)
+add_executable(plane_registration 
+               src/plane_registration.cpp 
+               src/plreg_main.cpp )
+
 
 target_link_libraries(wam_move
   ${catkin_LIBRARIES}
 )
-target_link_libraries(plane_registration ${catkin_LIBRARIES})
+
+target_link_libraries(plane_registration 
+                      ${catkin_LIBRARIES})
 
