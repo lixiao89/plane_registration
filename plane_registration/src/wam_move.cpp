@@ -15,6 +15,7 @@
 #include <std_msgs/Int32.h>
 #include <sstream>
 #include <eigen3/Eigen/Dense>
+#include <eigen3/Eigen/LU>
 
 #include <math.h>   // PI
 #include <vector>
@@ -201,21 +202,35 @@ public:
 	    Eigen::Vector3d rot_axis = cutter_z.cross( probing_est_normal );
 
 	    // Covert rot_axis from base frame to cutter frame
-	    Eigen::Vector3d rot_axis_cutter_frame = 
+	    Frame inv_tip_frame = tip_frame_.Inverse();
+	    Eigen::Matrix4d inv_tip_frame_temp;
+	    for ( int i = 0; i < 3; ++i )
+	      for ( int j = 0; j < 3; ++j)
+		inv_tip_frame_temp(i, j) = inv_tip_frame(i, j);
 
+	    Eigen::MatrixXd homo_rot_axis_base_frame(4,1);
+	    homo_rot_axis_base_frame << rot_axis(0), rot_axis(1), rot_axis(2), 0;
+
+	    Eigen::MatrixXd homo_rot_axis_cutter_frame = inv_tip_frame_temp*homo_rot_axis_base_frame;
+
+	    Eigen::Vector3d rot_axis_cutter_frame( homo_rot_axis_cutter_frame(0),
+						   homo_rot_axis_cutter_frame(1),
+						   homo_rot_axis_cutter_frame(2));
+
+	    // calculate relative angel between estimated plane normal and cutter z axis
 	    double rel_angle = cutter_z.dot( probing_est_normal ) / ( cutter_z.norm() * probing_est_normal.norm() );
 
 	    if ( rel_angle > 0.2 ){
 
 	      Eigen::Matrix3d skew;
-	      skew << 0, -rot_axis(3), rot_axis(2),
-		rot_axis(3), 0, -rot_axis(1),
-		-rot_axis(2), rot_axis(1), 0;
+	      skew << 0, -rot_axis_cutter_frame(3), rot_axis_cutter_frame(2),
+		rot_axis_cutter_frame(3), 0, -rot_axis_cutter_frame(1),
+		-rot_axis_cutter_frame(2), rot_axis_cutter_frame(1), 0;
 	      
 	      double rel_angle_scaled = 0.001 * rel_angle;
 
 	      // Rodrigues Formula
-	      Eigen::Matrix3d correction_rotation_temp = Eigen::Matrix3d::Identity() + skew*sin( rel_angle_scaled ) + skew*skew*( 1 - cos( rel_angle_scaled )*cos( rel_angle_scaledlam ) );
+	      Eigen::Matrix3d correction_rotation_temp = Eigen::Matrix3d::Identity() + skew*sin( rel_angle_scaled ) + skew*skew*( 1 - cos( rel_angle_scaled )*cos( rel_angle_scaled ) );
 
 	      Rotation correction_rotation;
 	      for ( int i = 0; i < 3; ++i )
