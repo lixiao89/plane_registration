@@ -10,6 +10,7 @@ PlaneRegistration::PlaneRegistration( ros::NodeHandle* node ): node_(node),
 {
     // pubs 
     pub_roterr_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/oriErr", 10);
+    pub_local_probing_normal_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/local_probing_est", 10);
 
     // subs
     sub_key_ = node->subscribe("/hybrid/key", 1, &PlaneRegistration::cb_key, this);
@@ -19,10 +20,16 @@ PlaneRegistration::PlaneRegistration( ros::NodeHandle* node ): node_(node),
     
     init_kdl_robot();
 
-    // for plane registration
+    // --- for plane registration ---
     ptsloc = 0;
     plane_ori_vectorX.push_back( 0 );
     plane_ori_vectorY.push_back( 0 );
+
+    // for local probing step
+    unit_vector_history_1.resize( 3, 1 );
+    unit_vector_history_1 << 0, 0, 0;
+    unit_vector_history_2.resize( 3, 1 );
+    unit_vector_history_2 << 0, 0, 0;
 }
 
 PlaneRegistration::~PlaneRegistration(){}
@@ -30,7 +37,8 @@ PlaneRegistration::~PlaneRegistration(){}
 void PlaneRegistration::update()
 {
   if ( est_state == ESTIMATE ){
-    orientation_error_estimate();
+    //orientation_error_estimate();
+    local_probing();
   } 
 }
 
@@ -75,6 +83,10 @@ void PlaneRegistration::cb_jnt_states(const sensor_msgs::JointState &msg)
 void PlaneRegistration::cb_ptsloc( const std_msgs::Int32 &msg )
 {
   ptsloc = msg.data;
+  if ( ptsloc == -1 ){
+    reset_start_point = 1;
+  }
+ 
 }
 
 
@@ -309,3 +321,104 @@ void PlaneRegistration::init_kdl_robot()
 						 1E-15));
 }
 
+
+void PlaneRegistration::remove_matrix_column(Eigen::MatrixXd& matrix, unsigned int colToRemove)
+{
+  unsigned int numRows = matrix.rows();
+  unsigned int numCols = matrix.cols()-1;
+  
+  if( colToRemove < numCols )
+    matrix.block(0,colToRemove,numRows,numCols-colToRemove) = matrix.block(0,colToRemove+1,numRows,numCols-colToRemove);
+  
+  matrix.conservativeResize(numRows,numCols);
+}
+
+
+Eigen::Vector3d PlaneRegistration::estimate_trj_unit_vector( Eigen::Vector3d& start_point,
+							     Eigen::Vector3d& curr_end_point,
+							     Eigen::MatrixXd& unit_vector_history ){							     					    
+
+  Eigen::Vector3d curr_vector = ( curr_end_point - start_point );
+  Eigen::Vector3d curr_unit_vector = curr_vector / curr_vector.norm();
+  
+  int num_rows = unit_vector_history.rows();
+  int num_cols = unit_vector_history.cols();
+
+  unit_vector_history.conservativeResize( num_rows, num_cols + 1 );
+  unit_vector_history.col( num_cols ) = curr_unit_vector;
+
+  if ( unit_vector_history.cols() > 25 ){
+    remove_matrix_column( unit_vector_history, 0 );
+  }
+
+  Eigen::Vector3d avg_vector = unit_vector_history.rowwise().mean();
+
+  return avg_vector;
+
+}
+
+
+void PlaneRegistration::local_probing(){
+  
+  geometry_msgs::Vector3 ori_err;
+  
+  fk_solver_->JntToCart( jnt_pos_, tip_frame_ );
+  
+  Eigen::Vector3d start_point( startPoint(0), startPoint(1), startPoint(2) );
+  Eigen::Vector3d curr_point( tip_frame_.p[0], tip_frame_.p[1], tip_frame_.p[2] );
+
+  // cutter moving in the first straight line, estimate the first vector
+  if ( ptsloc == 1 ){
+          
+   plane_vec_1 =  estimate_trj_unit_vector( start_point,
+					    curr_point,
+					    unit_vector_history_1 ); 				
+  
+    std::cout<<"vector 1: "<< plane_vec_1 << std::endl;
+    
+    ptsloclast = 1;
+    
+  }
+
+  // cutter moving in another direction, estimate the second vector
+  if ( ptsloc == 2 ){
+
+  plane_vec_2 =  estimate_trj_unit_vector( start_point,
+					   curr_point,
+					   unit_vector_history_2 ); 				
+  
+    
+    std::cout<<"vector 2: "<< plane_vec_2 << std::endl;
+    
+    ptsloclast = 2;
+    
+  }
+
+  // finished collecting two vectors on plane, calculate the normal
+  if ( ptsloc == 3 ){
+    
+    Eigen::Vector3d normal;
+
+    normal = plane_vec_1.cross( plane_vec_2 );
+
+    // make sure the reported normal makes an angle < 90 degrees with the cutter z axis
+    Eigen::Vector3d tipZ( tip_frame_.M.UnitZ()[0],
+			  tip_frame_.M.UnitZ()[1],
+			  tip_frame_.M.UnitZ()[2] );
+    if ( normal.dot( tipZ ) < 0 ){
+      normal = -normal;
+    }
+
+    std::cout << "est. Normal: "<< std::endl;
+    std::cout << normal <<std::endl;
+ 
+    local_probing_est.x = normal(0);
+    local_probing_est.y = normal(1);
+    local_probing_est.z = normal(2);
+    pub_local_probing_normal_est_.publish( local_probing_est );
+    
+  }
+  
+    
+
+}

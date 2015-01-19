@@ -14,7 +14,7 @@
 #include <kdl_conversions/kdl_msg.h>
 #include <std_msgs/Int32.h>
 #include <sstream>
-
+#include <eigen3/Eigen/Dense>
 
 #include <math.h>   // PI
 #include <vector>
@@ -50,7 +50,8 @@ public:
       CTRL_START_CORRECT_Y,
       CTRL_HYBRID,
       CTRL_CORRECT,
-      CTRL_SINUSOID
+      CTRL_SINUSOID,
+      CTRL_LOCAL_PROBING
     };
   
   WamMove(ros::NodeHandle* node):
@@ -69,6 +70,8 @@ public:
     sub_key_ = node->subscribe("/hybrid/key", 1, &WamMove::cb_key, this);
     sub_states_ = node->subscribe("/gazebo/barrett_manager/wam/joint_states", 1, &WamMove::cb_jnt_states, this);
     sub_roterr_ = node->subscribe("/plreg/oriErr", 1, &WamMove::cb_oriErr, this);
+    sub_est_normal = node->subscribe("/plreg/local_probing_est", 1, &WamMove::cb_probing_est, this);
+
     // class memeber
     init_kdl_robot();
     
@@ -81,6 +84,8 @@ public:
     // plane registration
     path = "/home/xli4217/wamdata.txt";
     ofs.open( path, std::ofstream::out );
+
+    probing_est_normal << 0, 0, 0;
   }
   
   virtual ~WamMove(){}
@@ -97,7 +102,7 @@ public:
     
 
     // MODE
-    if (ctrl_type_ == CTRL_HYBRID || ctrl_type_ == CTRL_START_HYBRID || ctrl_type_ == CTRL_CORRECT || ctrl_type_ == CTRL_SINUSOID || ctrl_type_ == CTRL_START_CORRECT_X || ctrl_type_ == CTRL_START_CORRECT_Y )
+    if (ctrl_type_ == CTRL_HYBRID || ctrl_type_ == CTRL_START_HYBRID || ctrl_type_ == CTRL_CORRECT || ctrl_type_ == CTRL_SINUSOID || ctrl_type_ == CTRL_START_CORRECT_X || ctrl_type_ == CTRL_START_CORRECT_Y || ctrl_type_ == CTRL_LOCAL_PROBING )
       {
 	
         
@@ -140,67 +145,157 @@ public:
 
 	//----------------for plane registration --------------------
 
-	// for estimating rotation error around y
-	std_msgs::Int32 plreg_msg;
-	if( last_hpf_cmd > 0 || cmd_v < 0){	  
-	  // tells plane_registration node to estimate for rotation error around X
-	  if ( ctrl_type_ == CTRL_START_CORRECT_X )     {  plreg_msg.data = 1; }
-	  // tells plane_registration node to estimate for rotation error around Y
-	  if ( ctrl_type_ == CTRL_START_CORRECT_Y )     {  plreg_msg.data = 2; }
-	}
-	else{
-	    plreg_msg.data = 0;
-	}
-	pub_plane_reg_pts_.publish( plreg_msg );
-	
-
 	Frame correction_frame( Frame::Identity() );
-	if ( ctrl_type_ == CTRL_START_CORRECT_X ){
-	    
-	    // Move along the cutter Y direction to obtain a vector on cutting plane that is in-plane with cutter X vector
-	    eevel = cmd_frame_.M.UnitY();
-	    double current_cutter_y = tip_frame_.p[1];
-	    
-	    // when cutter moved 0.2m, stop and start correcting
-	    if ( current_cutter_y < start_point[1] - 0.03 ){ 
-	    
-	      eevel = Vector::Zero();
-	      
-	      Rotation correction_rotation;
-	      
-	      correction_rotation.DoRotX( correction_vel( oriErr(0) ) );
-	      
-	      correction_frame.M = correction_rotation;
 
-	      std::cout << "Data Collected, Start Correcting ...." << std::endl;
+	// Local Probing step
+	if ( ctrl_type_ == CTRL_LOCAL_PROBING ){
+	  
+	  
+	  bool first_vector_ready = false;
+	  bool second_vector_ready = false;
 
+	  // collect information for first vector
+	  if ( first_vector_ready == false ){
+	    double current_cutter_z = tip_frame_.p[2];
+	    eevel = cmd_frame_.M.UnitX();
+	    if ( last_hpf_cmd > 0 || cmd_v < 0 ){
+	      plreg_msg.data = 1;
 	    }
-	}
-	else if ( ctrl_type_ == CTRL_START_CORRECT_Y ){
+	    else{
+	      plreg_msg.data = 0;
+	    }
 	    
-	    // Move along the cutter X direction to obtain a vector on cutting plane that is in-plane with cutter X vector
-	  eevel = cmd_frame_.M.UnitX();
-	    double current_cutter_z = tip_frame_.p[2]; // center of cutter in base frame
-
-	    //std::cout<<current_cutter_z<<","<<start_point[2]<<std::endl;
+	    if ( current_cutter_z > start_point[2] - 0.027 && current_cutter_z < start_point[2] - 0.03 ){
+	      first_vector_ready == true;
+	      plreg_msg.data = -1;
+	    }
+	  }
+	  
+	  // collect information for second vector
+	  if ( first_vector_ready == true && second_vector_ready == false ){
+	    double current_cutter_y = tip_frame_.p[1];
+	    eevel = cmd_frame_.M.UnitY();
+	    if ( last_hpf_cmd > 0 || cmd_v < 0 ){
+	      plreg_msg.data = 2;
+	    }
+	    else{
+	      plreg_msg.data = 0;
+	    }
 	    
-	    // when cutter moved 0.2m, stop and start correcting
-	    if ( current_cutter_z < start_point[2] - 0.03 ){ 
-	      eevel = Vector::Zero();
+	    if ( current_cutter_y > start_point[1] - 0.027 && current_cutter_y < start_point[1] - 0.03 ){
+	      second_vector_ready == true;
 	      
+	    }
+	  }
+
+	  // both vectors ready, start calculating error and perform correction
+	  if ( first_vector_ready == true && second_vector_ready == true ){
+	    
+	    std::cout << "start correcting ..." << std::endl;
+
+	    plreg_msg.data = 3;
+	    
+	    Vector unitZ = tip_frame_.M.UnitZ();
+	    Eigen::Vector3d cutter_z( unitZ[0], unitZ[1], unitZ[2] );
+	    
+	    Eigen::Vector3d rot_axis = cutter_z.cross( probing_est_normal );
+
+	    // Covert rot_axis from base frame to cutter frame
+	    Eigen::Vector3d rot_axis_cutter_frame = 
+
+	    double rel_angle = cutter_z.dot( probing_est_normal ) / ( cutter_z.norm() * probing_est_normal.norm() );
+
+	    if ( rel_angle > 0.2 ){
+
+	      Eigen::Matrix3d skew;
+	      skew << 0, -rot_axis(3), rot_axis(2),
+		rot_axis(3), 0, -rot_axis(1),
+		-rot_axis(2), rot_axis(1), 0;
+	      
+	      double rel_angle_scaled = 0.001 * rel_angle;
+
+	      // Rodrigues Formula
+	      Eigen::Matrix3d correction_rotation_temp = Eigen::Matrix3d::Identity() + skew*sin( rel_angle_scaled ) + skew*skew*( 1 - cos( rel_angle_scaled )*cos( rel_angle_scaledlam ) );
+
 	      Rotation correction_rotation;
-	      
-	      correction_rotation.DoRotY( correction_vel( oriErr(1) ) );
-	      
+	      for ( int i = 0; i < 3; ++i )
+		for ( int j = 0; j < 3; ++j)
+		  correction_rotation( i, j ) = correction_rotation_temp( i, j );
+	    
 	      correction_frame.M = correction_rotation;
-
-	      std::cout << "Data Collected, Start Correcting ...." << std::endl;
+	    }
+	    else{
+	      correction_frame = Frame::Identity();
+	      std::cout << "correction complete!" << std::endl;
 	    }
 	    
 	  }
-	else{
-	  correction_frame = Frame::Identity();
-	}
+	  
+	  pub_plane_reg_pts_.publish( plreg_msg );
+	  
+	} 
+
+	// // for estimating rotation error around y
+	// std_msgs::Int32 plreg_msg;
+	// if( last_hpf_cmd > 0 || cmd_v < 0){	  
+	//   // tells plane_registration node to estimate for rotation error around X
+	//   if ( ctrl_type_ == CTRL_START_CORRECT_X )     {  plreg_msg.data = 1; }
+	//   // tells plane_registration node to estimate for rotation error around Y
+	//   if ( ctrl_type_ == CTRL_START_CORRECT_Y )     {  plreg_msg.data = 2; }
+	// }
+	// else{
+	//     plreg_msg.data = 0;
+	// }
+	// pub_plane_reg_pts_.publish( plreg_msg );
+	
+
+	// Frame correction_frame( Frame::Identity() );
+	// if ( ctrl_type_ == CTRL_START_CORRECT_X ){
+	    
+	//     // Move along the cutter Y direction to obtain a vector on cutting plane that is in-plane with cutter X vector
+	//     eevel = cmd_frame_.M.UnitY();
+	//     double current_cutter_y = tip_frame_.p[1];
+	    
+	//     // when cutter moved 0.2m, stop and start correcting
+	//     if ( current_cutter_y < start_point[1] - 0.03 ){ 
+	    
+	//       eevel = Vector::Zero();
+	      
+	//       Rotation correction_rotation;
+	      
+	//       correction_rotation.DoRotX( correction_vel( oriErr(0) ) );
+	      
+	//       correction_frame.M = correction_rotation;
+
+	//       std::cout << "Data Collected, Start Correcting ...." << std::endl;
+
+	//     }
+	// }
+	// else if ( ctrl_type_ == CTRL_START_CORRECT_Y ){
+	    
+	//     // Move along the cutter X direction to obtain a vector on cutting plane that is in-plane with cutter X vector
+	//   eevel = cmd_frame_.M.UnitX();
+	//     double current_cutter_z = tip_frame_.p[2]; // center of cutter in base frame
+
+	//     //std::cout<<current_cutter_z<<","<<start_point[2]<<std::endl;
+	    
+	//     // when cutter moved 0.2m, stop and start correcting
+	//     if ( current_cutter_z < start_point[2] - 0.03 ){ 
+	//       eevel = Vector::Zero();
+	      
+	//       Rotation correction_rotation;
+	      
+	//       correction_rotation.DoRotY( correction_vel( oriErr(1) ) );
+	      
+	//       correction_frame.M = correction_rotation;
+
+	//       std::cout << "Data Collected, Start Correcting ...." << std::endl;
+	//     }
+	    
+	//   }
+	// else{
+	//   correction_frame = Frame::Identity();
+	// }
 	
 	//-------------------------------------------------------------
 
@@ -283,6 +378,9 @@ private:
    
     else if (msg.data == "c")// start correcting
       ctrl_start_correcting();
+
+    else if (msg.data == "lp") // start local probing
+      ctrl_local_probing();
     
     else
       ROS_ERROR("Unsupported Commands");
@@ -315,6 +413,14 @@ private:
     oriErr(2) = msg.z;
   }
       
+  // callback for subscriber to estimated plane normal in the initial probing stage 
+  void cb_probing_est(const geometry_msgs::Vector3 &msg){
+    if( plreg_msg.data == 3 ){
+    probing_est_normal(0) = msg.x;
+    probing_est_normal(1) = msg.y;
+    probing_est_normal(2) = msg.z;
+    }
+  }
 
   void init_kdl_robot()
   {
@@ -479,6 +585,19 @@ private:
   }
 
 
+void ctrl_local_probing()
+  {
+    ctrl_type_ = CTRL_LOCAL_PROBING;
+    
+    fk_solver_->JntToCart(jnt_pos_, tip_frame_);
+   
+    // sync cmd frame
+    cmd_frame_ = tip_frame_;
+    start_point[0] = tip_frame_.p[0];
+    start_point[1] = tip_frame_.p[1];
+    start_point[2] = tip_frame_.p[2];
+  }
+
 
   void ctrl_start_sinusoid()
   {
@@ -537,13 +656,11 @@ private:
   ros::NodeHandle* node_;
   ros::Publisher pub_state_;
   ros::Publisher pub_jnt_cmd_;
-  ros::Publisher pub_plane_reg_pts_;
-  ros::Publisher pub_err_gt_;
   ros::Subscriber sub_joy_;
   ros::Subscriber sub_jr3_;
   ros::Subscriber sub_key_;
   ros::Subscriber sub_states_;
-  ros::Subscriber sub_roterr_;
+ 
 
   // joint states
   JntArray jnt_pos_;   // jnt pos current
@@ -587,8 +704,18 @@ private:
   const char* path;
   std::ofstream ofs;
 
-  Vector start_point;    
-  // ----------------------------------------------------
+  Vector start_point;
+ 
+  ros::Publisher pub_plane_reg_pts_;
+  ros::Publisher pub_err_gt_;
+ 
+  ros::Subscriber sub_roterr_;
+  ros::Subscriber sub_est_normal; // for initial probing step
+
+  Eigen::Vector3d probing_est_normal;
+
+  std_msgs::Int32 plreg_msg;
+ // ----------------------------------------------------
 
 };
 
