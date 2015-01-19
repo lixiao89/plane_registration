@@ -374,7 +374,7 @@ void PlaneRegistration::local_probing(){
 					    curr_point,
 					    unit_vector_history_1 ); 				
   
-    std::cout<<"vector 1: "<< plane_vec_1 << std::endl;
+   // std::cout<<"vector 1: "<< plane_vec_1 << std::endl;
     
     ptsloclast = 1;
     
@@ -388,7 +388,7 @@ void PlaneRegistration::local_probing(){
 					   unit_vector_history_2 ); 				
   
     
-    std::cout<<"vector 2: "<< plane_vec_2 << std::endl;
+  //std::cout<<"vector 2: "<< plane_vec_2 << std::endl;
     
     ptsloclast = 2;
     
@@ -409,12 +409,14 @@ void PlaneRegistration::local_probing(){
       normal = -normal;
     }
 
+    Eigen::Vector3d unit_normal = normal / normal.norm();
+
     std::cout << "est. Normal: "<< std::endl;
     std::cout << normal <<std::endl;
  
-    local_probing_est.x = normal(0);
-    local_probing_est.y = normal(1);
-    local_probing_est.z = normal(2);
+    local_probing_est.x = unit_normal(0);
+    local_probing_est.y = unit_normal(1);
+    local_probing_est.z = unit_normal(2);
     pub_local_probing_normal_est_.publish( local_probing_est );
     
   }

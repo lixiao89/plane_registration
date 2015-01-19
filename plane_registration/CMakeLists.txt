@@ -42,7 +42,10 @@ include_directories(
 
 
 ## Declare a cpp executable
-add_executable(wam_move src/wam_move.cpp)
+add_executable(wam_move 
+               src/wam_control_main.cpp.cpp
+               src/wam_control.cpp)
+
 add_executable(plane_registration 
                src/plane_registration.cpp 
                src/plreg_main.cpp )
