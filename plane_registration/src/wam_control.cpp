@@ -6,6 +6,7 @@ WamMove:: WamMove(ros::NodeHandle* node):
     ctrl_type_(CTRL_IDLE),
     first_vector_ready(false),
     second_vector_ready(false),
+    ascend_ready(false),
     initialize_ready(false),
     err_pose(0)
   {
@@ -178,6 +179,9 @@ void WamMove::cb_key(const std_msgs::String &msg)
     else if (msg.data == "lp"){ // start local probing
       ctrl_local_probing();
       initialize_ready = true;
+      first_vector_ready = false;
+      second_vector_ready = false;
+      ascend_ready = false;
     }
     else
       ROS_ERROR("Unsupported Commands");
@@ -407,6 +411,7 @@ bool WamMove::local_probing( const Frame& tip_frame,
 	    else{
 	      plreg_msg.data = 0;
 	    }	    
+	    pub_plane_reg_pts_.publish( plreg_msg );
 	    std::cout << "collecting first vector ..." <<std::endl;
 	    
 	    double current_cutter_z = tip_frame.p[2];
@@ -428,7 +433,7 @@ bool WamMove::local_probing( const Frame& tip_frame,
 	    else{
 	      plreg_msg.data = 0;
 	    }
-	    
+	    pub_plane_reg_pts_.publish( plreg_msg );
 	    std::cout << "collecting second vector" << std::endl;
 	    
 	    double current_cutter_y = tip_frame_.p[1];
@@ -441,18 +446,24 @@ bool WamMove::local_probing( const Frame& tip_frame,
 
 	  // ------ both vectors ready, start calculating error and perform CORRECTION -----
 	  if ( first_vector_ready == true && second_vector_ready == true ){
-	   
+	    
+	    // stop hybrid control when correcting
+	    curr_hpf_cmd = 0;
+
 	      std::cout << "start correcting ..." << std::endl;
 	      std::cout << "estimated normal is " << std::endl;
 	      std::cout << probing_est_normal <<std::endl;
 	      plreg_msg.data = 3;
+	      pub_plane_reg_pts_.publish( plreg_msg );
 
 	      // ascend the cutter in the local -z direction to avoid collision while correcting
 	      double current_cutter_x = tip_frame_.p[0];
-	      if ( current_cutter_x < starting_point[0] + 0.02 ){
+	      if ( ascend_ready == false ){
 		cutter_linear_vel = -cmd_frame.M.UnitZ();
-		curr_hpf_cmd = 0;
 		std::cout << "ascending to avoid collision while correcting" << std::endl;
+		if ( current_cutter_x > starting_point[0] + 0.01 ){
+		  ascend_ready = true;
+		}
 	      }
 	      
 	    // start correcting process... 
@@ -492,7 +503,7 @@ bool WamMove::local_probing( const Frame& tip_frame,
 
 		std::cout<<"rel_angle"<<rel_angle<<std::endl;
 
-		if ( rel_angle > 0.2 ){
+		if ( rel_angle > 0.4 ){
 
 		  Eigen::Matrix3d skew;
 		  skew << 0, -rot_axis_cutter_frame(2), rot_axis_cutter_frame(1),
@@ -510,7 +521,6 @@ bool WamMove::local_probing( const Frame& tip_frame,
 		      correction_rotation( i, j ) = correction_rotation_temp( i, j );
 	    
 		  correction_frame.M = correction_rotation;
-		  pub_plane_reg_pts_.publish( plreg_msg );
 		  return false;
 
 		}

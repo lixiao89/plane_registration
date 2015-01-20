@@ -165,6 +165,7 @@ private:
   std_msgs::Int32 plreg_pts;
   double last_hpf_cmd;
   geometry_msgs::Vector3 err_gt;
+ 
   // store orientation error information published from plane_registration node
   Vector oriErr;
  
@@ -181,13 +182,15 @@ private:
   ros::Subscriber sub_est_normal; // for initial probing step
 
   Eigen::Vector3d probing_est_normal;
-
+  
+  // for telling plane_registration node if current cutter position can be used to estimate plane vector and what use of current motion.
+  // corresponeds to 'ptsloc'
   std_msgs::Int32 plreg_msg;
 
   
   bool first_vector_ready;
   bool second_vector_ready;
-
+  bool ascend_ready;
   // if err_pose = 1, give rotation error around x increment of +3 degrees
   // if err_pose = -1, ..........................x............. -3 degrees
   // if err_pose = 2, ......................... y ............. +3 degrees,
