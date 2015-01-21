@@ -6,7 +6,8 @@ PlaneRegistration::PlaneRegistration( ros::NodeHandle* node ): node_(node),
 							       process_data_num(50),
 							       reset_start_point( 0 ),
                                                                error_last( 0 ),
-                                                               ptsloclast( 0 ){
+                                                               ptsloclast( 0 ),
+							       plreg_process_cue(0){
     // pubs 
     pub_roterr_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/oriErr", 10);
     pub_local_probing_normal_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/local_probing_est", 10);
@@ -17,7 +18,8 @@ PlaneRegistration::PlaneRegistration( ros::NodeHandle* node ): node_(node),
     sub_jr3_ = node->subscribe("/jr3/wrench", 1, &PlaneRegistration::cb_jr3, this);
     sub_states_ = node->subscribe("/gazebo/barrett_manager/wam/joint_states", 1, &PlaneRegistration::cb_jnt_states, this);
     sub_plreg_pts_ = node->subscribe("/plreg/ptlocation", 1, &PlaneRegistration::cb_ptsloc, this);
-    
+    sub_plreg_trigger_ = node->subscribe("/plreg/trigger",1, &PlaneRegistration::cb_plreg_trigger, this);
+
     init_kdl_robot();
 
     // --- for plane registration ---
@@ -34,6 +36,9 @@ PlaneRegistration::PlaneRegistration( ros::NodeHandle* node ): node_(node),
     // during cutting
     trajectory_unit_vector_history.resize( 3,1 );
     trajectory_unit_vector_history << 0, 0, 0;
+    
+    curr_point_history.resize(3,1);
+    curr_point_history << 0, 0, 0;
 
     last_reset_start_point_time = ros::Time::now().toSec();
 }
@@ -44,8 +49,11 @@ PlaneRegistration::~PlaneRegistration(){}
 void PlaneRegistration::update()
 {
   if ( est_state == ESTIMATE ){
-    //orientation_error_estimate();
-    local_probing();
+   
+    if ( plreg_process_cue == 1 )
+      local_probing();
+    if ( plreg_process_cue == 2 )
+      estimate_during_cutting();
   } 
 }
 
@@ -89,13 +97,14 @@ void PlaneRegistration::cb_jnt_states(const sensor_msgs::JointState &msg)
 
 void PlaneRegistration::cb_ptsloc( const std_msgs::Int32 &msg )
 {
-  ptsloc = msg.data;
-  
-  // used in local probing to indicate trasition from first to second vector
-  if ( ptsloc == -1 ){
-    reset_start_point = 1;
-  }
- 
+  ptsloc = msg.data; 
+}
+
+
+void PlaneRegistration::cb_plreg_trigger( const std_msgs::Int32 &msg ){
+
+  plreg_process_cue = msg.data;
+
 }
 
 // ******************** Plane Registration ***********************************
@@ -104,8 +113,6 @@ void PlaneRegistration::cb_ptsloc( const std_msgs::Int32 &msg )
 
 
 void PlaneRegistration::local_probing(){
-  
-  geometry_msgs::Vector3 ori_err;
   
   fk_solver_->JntToCart( jnt_pos_, tip_frame_ );
   
@@ -121,6 +128,11 @@ void PlaneRegistration::local_probing(){
     
     ptsloclast = 1;
     
+  }
+
+  // resetting start point when moving from direction 1 to direction 2
+  if ( ptsloc == -1 ){
+    reset_start_point = 1;
   }
 
   // cutter moving in another direction, estimate the second vector
@@ -170,15 +182,23 @@ void PlaneRegistration::local_probing(){
 void PlaneRegistration::estimate_during_cutting(){
 
   fk_solver_->JntToCart( jnt_pos_, tip_frame_ );
+  Eigen::Vector3d startPoint_temp( startPoint ); 
+
+  // reset start point every 5 seconds to capture the most recent motion
+  if ( ros::Time::now().toSec() - last_reset_start_point_time > 5 ){
+    startPoint_temp = curr_point_history.col(0);
+    last_reset_start_point_time = ros::Time::now().toSec();
+  }
   
   if ( ptsloc == 1 ){
     
     Eigen::Vector3d curr_point( tip_frame_.p[0], tip_frame_.p[1], tip_frame_.p[2] );
     
-    trajectory_unit_vector = estimate_trj_unit_vector( startPoint, 
+    trajectory_unit_vector = estimate_trj_unit_vector( startPoint_temp, 
 						       curr_point, 
 						       trajectory_unit_vector_history );
-    
+
+
     trajectory_unit_vector_last = trajectory_unit_vector;    
   }     
   if ( ptsloc == 0 ){
@@ -192,12 +212,6 @@ void PlaneRegistration::estimate_during_cutting(){
 
   pub_traj_unit_vector_.publish( trajectory_unit_vector_msg );
 
-
-  // reset start point every 5 seconds
-  if ( ros::Time::now().toSec() - last_reset_start_point_time > 5 ){
-    reset_start_point = 1;
-    last_reset_start_point_time = ros::Time::now().toSec();
-  }
 
 }
 
@@ -214,11 +228,19 @@ Eigen::Vector3d PlaneRegistration::estimate_trj_unit_vector( Eigen::Vector3d& st
   int num_rows = unit_vector_history.rows();
   int num_cols = unit_vector_history.cols();
 
+  // add the current vector into history
   unit_vector_history.conservativeResize( num_rows, num_cols + 1 );
   unit_vector_history.col( num_cols ) = curr_unit_vector;
 
+
+  // add current point into history
+  curr_point_history.conservativeResize( num_rows, num_cols + 1 );
+  curr_point_history.col( num_cols ) = curr_end_point;
+
+
   if ( unit_vector_history.cols() > 25 ){
     remove_matrix_column( unit_vector_history, 0 );
+    remove_matrix_column( curr_point_history, 0 );
   }
 
   Eigen::Vector3d avg_vector = unit_vector_history.rowwise().mean();

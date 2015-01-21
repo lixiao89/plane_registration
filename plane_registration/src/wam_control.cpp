@@ -4,11 +4,14 @@
 WamMove:: WamMove(ros::NodeHandle* node):
     node_(node),
     ctrl_type_(CTRL_IDLE),
+    inject_noise(NO_NOISE),
+    inject_noise_last(NO_NOISE),
     first_vector_ready(false),
     second_vector_ready(false),
     ascend_ready(false),
     initialize_ready(false),
-    err_pose(0)
+    err_pose(0),
+    start_correcting_x(false)
   {
     // pubs 
     pub_state_ = node->advertise<std_msgs::String>("/dvrk_psm1/set_robot_state", 10);
@@ -88,6 +91,7 @@ void WamMove::update()
 	plreg_process_cue.data = 1;
       } 
 	  
+
       // Cutting Step
       
       if ( ctrl_type_ == CTRL_HYBRID ){
@@ -95,14 +99,32 @@ void WamMove::update()
 	// move along cutter x axis
 	eevel = cmd_frame_.M.UnitX();
 	
-	correct_x_during_cutting( tip_frame_, correction_frame );
+	correct_x_during_cutting( tip_frame_, 
+				  last_hpf_cmd, 
+				  cmd_v,
+				  correction_frame );
 
 	plreg_process_cue.data = 2;
       }
       
       pub_plreg_trigger_.publish( plreg_process_cue );
-      //---------------------------------------------------------------------------
+     
 
+      //----------------------  Inject Noise ------------------------------
+      
+      Frame noise_frame( Frame::Identity() );
+
+      if ( inject_noise == X_NOISE ){
+	double xerr = 0.0001; 
+	Rotation roterr;
+	roterr.DoRotY( xerr );
+	noise_frame.M = roterr;
+      }
+
+      if (inject_noise == Y_NOISE){
+      }
+
+      // -----------------------------------------------------------------
 	double vel_gain = 0.001;
 	double rot_gain = 0.4;
 	
@@ -118,7 +140,7 @@ void WamMove::update()
 
 	Frame force_frame;
 	force_frame.p(2) = cmd_v;
-	cmd_frame_ = cmd_frame_ * force_frame * correction_frame;
+	cmd_frame_ = cmd_frame_ * force_frame * correction_frame * noise_frame;
 
 	// do ik
 	ik_solver_->CartToJnt(jnt_pos_, cmd_frame_, jnt_cmd_);
@@ -188,9 +210,12 @@ void WamMove::cb_key(const std_msgs::String &msg)
       ctrl_hybrid();
       initialize_ready = true;
     }
-    else if (msg.data == "c"){// start correcting
-      ctrl_start_correcting();
-      initialize_ready = true;
+    else if (msg.data == "xn"){
+      inject_noise = X_NOISE;
+      inject_noise_last = X_NOISE;
+    }
+    else if (msg.data == "yn"){
+      inject_noise = Y_NOISE; 
     }
     else if (msg.data == "lp"){ // start local probing
       ctrl_local_probing();
@@ -405,19 +430,6 @@ void WamMove::ctrl_hybrid()
   }
 
 
-void WamMove::ctrl_start_correcting()
-  {
-    // enter hybrid
-    ctrl_type_ = CTRL_CORRECT;
-    fk_solver_->JntToCart(jnt_pos_, tip_frame_);
-    std::cout << "tip pose = \n" << tip_frame_ << std::endl;
-
-    // sync cmd frame
-    cmd_frame_ = tip_frame_;
-  } 
-
-
-
  
 bool WamMove::local_probing( const Frame& tip_frame,
 			     const Frame& cmd_frame,
@@ -441,6 +453,8 @@ bool WamMove::local_probing( const Frame& tip_frame,
 	    
 	    double current_cutter_z = tip_frame.p[2];
 	    cutter_linear_vel = cmd_frame.M.UnitX();
+
+	    // for informing plane_registration to reset start point during transition from vector 1 motion to vector 2
 	    if ( current_cutter_z < starting_point[2] - 0.027 && current_cutter_z > starting_point[2] - 0.03 ){
 	      plreg_msg.data = -1;
 	      std::cout << "first vector ready" <<std::endl;
@@ -493,61 +507,18 @@ bool WamMove::local_probing( const Frame& tip_frame,
 	      
 	    // start correcting process... 
 	      if ( probing_est_normal.norm() != 0 ){ 
-		Vector unitZ = tip_frame.M.UnitZ();
-		Eigen::Vector3d cutter_z( unitZ[0], unitZ[1], unitZ[2] );
-	    
-		Eigen::Vector3d rot_axis = cutter_z.cross( probing_est_normal );
-	      
 		
-		// Covert rot_axis from base frame to cutter frame
-		Frame inv_tip_frame = tip_frame.Inverse();
-		Eigen::Matrix4d inv_tip_frame_temp;
-		for ( int i = 0; i < 4; ++i )
-		  for ( int j = 0; j < 4; ++j)
-		    inv_tip_frame_temp(i, j) = inv_tip_frame(i, j);
-
+		double rel_angle;
 		
-		Eigen::MatrixXd homo_rot_axis_base_frame(4,1);
-		homo_rot_axis_base_frame << rot_axis(0), rot_axis(1), rot_axis(2), 0;
-
-		
-		Eigen::MatrixXd homo_rot_axis_cutter_frame = inv_tip_frame_temp*homo_rot_axis_base_frame;
-
-		
-		Eigen::Vector3d temp( homo_rot_axis_cutter_frame(0),
-				      homo_rot_axis_cutter_frame(1),
-				      homo_rot_axis_cutter_frame(2));
-
-	
-		Eigen::Vector3d rot_axis_cutter_frame = temp / temp.norm();
-
-		// calculate relative angel between estimated plane normal and cutter z axis
-		double rel_angle = cutter_z.dot( probing_est_normal ) / ( cutter_z.norm() * probing_est_normal.norm() );
-
-		rel_angle = acos(rel_angle)*180/PI;
-
-		std::cout<<"rel_angle"<<rel_angle<<std::endl;
+		find_correction_frame( tip_frame_,
+				       'z',
+				       probing_est_normal,
+				       correction_frame,
+				       rel_angle );
+		std::cout << "Error angle is: " << rel_angle << std::endl;
 
 		if ( rel_angle > 0.4 ){
-
-		  Eigen::Matrix3d skew;
-		  skew << 0, -rot_axis_cutter_frame(2), rot_axis_cutter_frame(1),
-		    rot_axis_cutter_frame(2), 0, -rot_axis_cutter_frame(0),
-		    -rot_axis_cutter_frame(1), rot_axis_cutter_frame(0), 0;
-	      	       		  
-		  double rel_angle_scaled = fabs( correction_vel(rel_angle) ); //0.0001*rel_angle; 
-		  std::cout<<"rel_angle_scaled"<<rel_angle_scaled<<std::endl;
-		  // Rodrigues Formula
-		  Eigen::Matrix3d correction_rotation_temp = Eigen::Matrix3d::Identity() + skew*sin( rel_angle_scaled ) + skew*skew*( 1 - cos( rel_angle_scaled )*cos( rel_angle_scaled ) );
-	
-		  Rotation correction_rotation;
-		  for ( int i = 0; i < 3; ++i )
-		    for ( int j = 0; j < 3; ++j)
-		      correction_rotation( i, j ) = correction_rotation_temp( i, j );
-	    
-		  correction_frame.M = correction_rotation;
 		  return false;
-
 		}
 	    
 		else{
@@ -561,8 +532,66 @@ bool WamMove::local_probing( const Frame& tip_frame,
 }
 
 
-void WamMove::find_correction_frame( const Frame& base_frame,
-				     const Frame& local_frame,
+
+
+void WamMove::correct_x_during_cutting( const Frame& tip_frame,
+					const double& last_hpf_cmd,
+				        double &curr_hpf_cmd,
+					Frame& correction_frame){
+  
+  if ( last_hpf_cmd > 0 || curr_hpf_cmd < 0 ){
+    plreg_msg.data = 1;
+  }
+  else{
+    plreg_msg.data = 0;
+  }	    
+  pub_plane_reg_pts_.publish( plreg_msg );
+  
+  
+
+  if ( traj_unit_vector.norm() != 0 ){
+    
+    std::cout << "estimated plane vector along cutter x is: " << std::endl;
+    std::cout << traj_unit_vector << std::endl;
+
+    double rel_angle;
+    find_correction_frame( tip_frame,
+			   'x',
+			   traj_unit_vector,
+			   correction_frame,
+			   rel_angle );
+
+    std::cout << "x error is: " << rel_angle << std::endl;
+
+    if ( rel_angle > 3 ){
+      start_correcting_x = true;
+      std::cout << "cutter x axis mis-alignment exceeds 3 degrees, start correcting ..." << std::endl;
+    }
+    if ( rel_angle < 0.4 ){
+      start_correcting_x = false;
+      std::cout << "correction complete." << std::endl;
+    }
+   
+    if ( start_correcting_x == true ){
+      curr_hpf_cmd = 0;
+      // HACK! For show only, remove this when in use
+      inject_noise = NO_NOISE;
+    }
+    if ( start_correcting_x == false ){
+      correction_frame = Frame::Identity();
+      // HACK!
+      inject_noise = inject_noise_last;
+    }
+
+  }
+  
+}
+
+
+
+
+
+void WamMove::find_correction_frame( const Frame& local_frame,
 				     const char& axis,
 				     const Eigen::Vector3d& goal_vector,
 				     Frame& correction_frame,
@@ -580,7 +609,7 @@ void WamMove::find_correction_frame( const Frame& base_frame,
 	      
 		
   // Covert rot_axis from base frame to cutter frame
-  Frame inv_local_frame = localframe.Inverse();
+  Frame inv_local_frame = local_frame.Inverse();
   Eigen::Matrix4d inv_local_frame_temp;
   for ( int i = 0; i < 4; ++i )
     for ( int j = 0; j < 4; ++j)
@@ -602,7 +631,7 @@ void WamMove::find_correction_frame( const Frame& base_frame,
   Eigen::Vector3d rot_axis_local_frame = temp / temp.norm();
 
   // calculate relative angel between estimated plane normal and cutter z axis
-  double relative_angle = target_axis_eigen.dot( goal_vector ) / ( target_axis_eigen.norm() * goal_vector.norm() );
+  relative_angle = target_axis_eigen.dot( goal_vector ) / ( target_axis_eigen.norm() * goal_vector.norm() );
 
   relative_angle = acos(relative_angle)*180/PI;
     
@@ -612,7 +641,7 @@ void WamMove::find_correction_frame( const Frame& base_frame,
       -rot_axis_local_frame(1), rot_axis_local_frame(0), 0;
 	      	       		  
     double rel_angle_scaled = fabs( correction_vel(relative_angle) ); 
-    std::cout<<"rel_angle_scaled"<<rel_angle_scaled<<std::endl;
+   
     // Rodrigues Formula
     Eigen::Matrix3d correction_rotation_temp = Eigen::Matrix3d::Identity() + skew*sin( rel_angle_scaled ) + skew*skew*( 1 - cos( rel_angle_scaled )*cos( rel_angle_scaled ) );
     
@@ -622,24 +651,6 @@ void WamMove::find_correction_frame( const Frame& base_frame,
 	correction_rotation( i, j ) = correction_rotation_temp( i, j );
     
     correction_frame.M = correction_rotation;
-    return false;
-    
-  }
-  
-  else{
-    correction_frame = Frame::Identity();
-    std::cout << "correction complete!" << std::endl;
-    return true;
-  }
-}  
-}
-
 
 }
 
-
-void WamMove::correct_x_during_cutting( const Frame& tip_frame,
-					Frame& correction_frame ){
-
-  
-}

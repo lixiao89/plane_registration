@@ -48,9 +48,15 @@ public:
       CTRL_ERROR_POSE,
       CTRL_START_HYBRID,
       CTRL_HYBRID,
-      CTRL_CORRECT,
       CTRL_LOCAL_PROBING
     };
+
+  enum NOISE_INJECTION
+  {
+    NO_NOISE,
+    X_NOISE,
+    Y_NOISE
+  };
   
   WamMove(ros::NodeHandle* node);
   
@@ -73,7 +79,7 @@ private:
   // tip_frame: homogeneous matrix for current cutter pose
   // cmd_frame: command frame
   // last_hpf_command: velocity in the cutter z direction given by the hybrid controller at last time step
-  // curr_hpf_command: ... at current time step (used to pass information to plane_registration node indicating of a vector parallel to the cutting surface )
+  // curr_hpf_command: ... at current time step (used to determine if current cutter position can be used for plane vector estimation, more useful for compliant surfaces )
   // starting_point: coordinate of the cutter when probing starts
   
   // Output:
@@ -81,14 +87,16 @@ private:
   // correction_frame: correction frame in local coordinates
   bool local_probing( const Frame& tip_frame,
 		      const Frame& cmd_frame,
-		      const double& last_hpf_command,
-		      double& curr_hpf_command,
+		      const double& last_hpf_cmd,
+		      double& curr_hpf_cmd,
 		      const Vector& starting_point,
 		      Vector& cutter_linear_vel,
 		      Frame& correction_frame );
   
   // performs correction during execution of the cutting task (align cutter x axis)
   void correct_x_during_cutting( const Frame& tip_frame,
+				 const double& last_hpf_cmd,
+				 double& curr_hpf_cmd,
 				 Frame& correction_frame );
 
   // perform correction during cutting ( align cutter y axis )
@@ -96,11 +104,12 @@ private:
 				 Frame& correction_frame );
 
   // Returns a frame (homogeneous matrix) which multiplied by local_frame aligns the local frame's 'axis' (can be 'x', 'y', 'z') axis with goal_vector (specified in the base_frame)  
-  Frame find_correction_frame( const Frame& base_frame,
-			       const Frame& local_frame,
-			       const char& axis,
-			       const Eigen::Vector3d& goal_vector );
-
+  void find_correction_frame( const Frame& local_frame,
+			      const char& axis,
+			      const Eigen::Vector3d& goal_vector,
+			      Frame& correction_frame,
+			      double& relative_angle);
+  
 // ********************** Subscriber Callbacks ************************
  
   void cb_jr3(const geometry_msgs::WrenchStamped &msg);
@@ -130,14 +139,11 @@ private:
   
   void ctrl_local_probing();
   
-  void ctrl_hybrid();
-  
-  void ctrl_start_correcting();
-  
+  void ctrl_hybrid(); 
 
 
   // *************  FIELD VARIABLES *************************************
-
+ 
 
   // ros stuff
   ros::NodeHandle* node_;
@@ -181,6 +187,10 @@ private:
   // indicate if initialization is ready
   bool initialize_ready;
 
+  // for show purpose only !
+  NOISE_INJECTION inject_noise;
+  NOISE_INJECTION inject_noise_last;
+
   // --------- for plane registration ----------------
   std_msgs::Int32 plreg_pts;
   double last_hpf_cmd;
@@ -218,7 +228,7 @@ private:
 
   ros::Subscriber sub_traj_unit_vector_;
   Eigen::Vector3d traj_unit_vector;
-
+  bool start_correcting_x;
 
   // for telling plane_registration node if current cutter position can be used to estimate plane vector and what use of current motion.
   // corresponeds to 'ptsloc'

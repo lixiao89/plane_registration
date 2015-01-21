@@ -54,6 +54,7 @@ public:
 
   void cb_ptsloc( const std_msgs::Int32 &msg );
   
+  void cb_plreg_trigger( const std_msgs::Int32 &msg );
 
   //******************** Plane Registration ************************
 
@@ -159,6 +160,10 @@ public:
   int ptsloclast;
   double error_last;
 
+  // subscribed from wam_control
+  // plreg_process_cue = 1: local probing
+  // plreg_process_cue = 2: cutting
+  int plreg_process_cue;
   
   // for local probing step
   ros::Publisher pub_local_probing_normal_est_;
@@ -172,15 +177,23 @@ public:
   geometry_msgs::Vector3 local_probing_est;
 
   // for during cutting step
+  ros::Subscriber sub_plreg_trigger_;
+
   ros::Publisher pub_traj_unit_vector_;
 
+  // estimated unit plane vector
   Eigen::Vector3d trajectory_unit_vector;
+  // used when current cutter position can't be used for estimation
   Eigen::Vector3d trajectory_unit_vector_last;
+  // 3xn matrix containing historical estimated unit plane vectors for averaging
   Eigen::MatrixXd trajectory_unit_vector_history;
+  // message to publish
   geometry_msgs::Vector3 trajectory_unit_vector_msg;
 
   
   double last_reset_start_point_time;
+  // used to reset start points
+  Eigen::MatrixXd curr_point_history;
   //----------------------------------------
 };
 
