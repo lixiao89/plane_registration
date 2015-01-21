@@ -15,7 +15,8 @@ WamMove:: WamMove(ros::NodeHandle* node):
     pub_jnt_cmd_ = node->advertise<trajectory_msgs::JointTrajectoryPoint>("/gazebo/traj_rml/joint_traj_point_cmd", 1);
     pub_plane_reg_pts_ = node->advertise<std_msgs::Int32>("/plreg/ptlocation", 10);
     pub_err_gt_ = node->advertise<geometry_msgs::Vector3>("/plreg/errGroundTruth", 10);
-    
+    pub_plreg_trigger_= node->advertise<std_msgs::Int32>("/plreg/trigger", 10);
+
     // subs
     //sub_joy_ = node->subscribe("/spacenav/joy", 1, &Control::cb_joy, this);
     sub_jr3_ = node->subscribe("/jr3/wrench", 1, &WamMove::cb_jr3, this);
@@ -23,7 +24,8 @@ WamMove:: WamMove(ros::NodeHandle* node):
     sub_states_ = node->subscribe("/gazebo/barrett_manager/wam/joint_states", 1, &WamMove::cb_jnt_states, this);
     sub_roterr_ = node->subscribe("/plreg/oriErr", 1, &WamMove::cb_oriErr, this);
     sub_est_normal = node->subscribe("/plreg/local_probing_est", 1, &WamMove::cb_probing_est, this);
-
+    sub_traj_unit_vector_ = node->subscribe("/plreg/traj_unit_vector", 1, &WamMove::cb_traj_unit_vector, this);
+      
     // class memeber
     init_kdl_robot();
     
@@ -38,6 +40,7 @@ WamMove:: WamMove(ros::NodeHandle* node):
     ofs.open( path, std::ofstream::out );
 
     probing_est_normal << 0, 0, 0;
+    plreg_process_cue.data = 0;
   }
   
 WamMove::~WamMove(){}
@@ -53,12 +56,7 @@ void WamMove::update()
       // calculate forward kinematics
       fk_solver_->JntToCart(jnt_pos_, tip_frame_);
     
-      if( ctrl_type_ == CTRL_HYBRID )
-	{
-	  // move in the x direction in cutter frame
-	  eevel = cmd_frame_.M.UnitX();
-	}		
-	
+    	
       // force control
       double cmd_force;
       if ( ctrl_type_ == CTRL_START_HYBRID || ctrl_type_ == CTRL_HYBRID ){
@@ -72,7 +70,9 @@ void WamMove::update()
 
       Frame correction_frame( Frame::Identity() );
 
-      // Local Probing step
+      // Local Probing Step
+     
+      // performs two straight line motions in different directions to obtain an estimate of plane normal
       if ( ctrl_type_ == CTRL_LOCAL_PROBING ){
 	if ( local_probing( tip_frame_,
 			    cmd_frame_,
@@ -82,10 +82,26 @@ void WamMove::update()
 			    eevel,
 			    correction_frame ) ){
 	    ctrl_type_ = CTRL_START_HYBRID;
-	  }  
-	} 
+	  }
+	
+	// tells plane_registration to perform local probing step 
+	plreg_process_cue.data = 1;
+      } 
 	  
-	//---------------------------------------------------------------------------
+      // Cutting Step
+      
+      if ( ctrl_type_ == CTRL_HYBRID ){
+
+	// move along cutter x axis
+	eevel = cmd_frame_.M.UnitX();
+	
+	correct_x_during_cutting( tip_frame_, correction_frame );
+
+	plreg_process_cue.data = 2;
+      }
+      
+      pub_plreg_trigger_.publish( plreg_process_cue );
+      //---------------------------------------------------------------------------
 
 	double vel_gain = 0.001;
 	double rot_gain = 0.4;
@@ -217,6 +233,15 @@ void WamMove::cb_probing_est(const geometry_msgs::Vector3 &msg){
     probing_est_normal(2) = msg.z;
     }
   }
+
+
+void WamMove::cb_traj_unit_vector(const geometry_msgs::Vector3 &msg){
+
+    traj_unit_vector(0) = msg.x;
+    traj_unit_vector(1) = msg.y;
+    traj_unit_vector(2) = msg.z;
+
+}
 
 void WamMove::init_kdl_robot()
   {
@@ -533,4 +558,88 @@ bool WamMove::local_probing( const Frame& tip_frame,
 	    }  
 	  }
 
+}
+
+
+void WamMove::find_correction_frame( const Frame& base_frame,
+				     const Frame& local_frame,
+				     const char& axis,
+				     const Eigen::Vector3d& goal_vector,
+				     Frame& correction_frame,
+				     double& relative_angle ){
+  Vector target_axis;
+  if ( axis == 'x' )      { target_axis = local_frame.M.UnitX(); }  
+  if ( axis == 'y' )      { target_axis = local_frame.M.UnitY(); }  
+  if ( axis == 'z' )      { target_axis = local_frame.M.UnitZ(); }  
+  
+
+  Eigen::Vector3d target_axis_eigen( target_axis[0], target_axis[1], target_axis[2] );
+	    
+  // goal_vector is probing_est_normal in local probing
+  Eigen::Vector3d rot_axis = target_axis_eigen.cross( goal_vector );
+	      
+		
+  // Covert rot_axis from base frame to cutter frame
+  Frame inv_local_frame = localframe.Inverse();
+  Eigen::Matrix4d inv_local_frame_temp;
+  for ( int i = 0; i < 4; ++i )
+    for ( int j = 0; j < 4; ++j)
+      inv_local_frame_temp(i, j) = inv_local_frame(i, j);
+
+		
+  Eigen::MatrixXd homo_rot_axis_base_frame(4,1);
+  homo_rot_axis_base_frame << rot_axis(0), rot_axis(1), rot_axis(2), 0;
+
+		
+  Eigen::MatrixXd homo_rot_axis_local_frame = inv_local_frame_temp*homo_rot_axis_base_frame;
+
+		
+  Eigen::Vector3d temp( homo_rot_axis_local_frame(0),
+			homo_rot_axis_local_frame(1),
+			homo_rot_axis_local_frame(2));
+
+	
+  Eigen::Vector3d rot_axis_local_frame = temp / temp.norm();
+
+  // calculate relative angel between estimated plane normal and cutter z axis
+  double relative_angle = target_axis_eigen.dot( goal_vector ) / ( target_axis_eigen.norm() * goal_vector.norm() );
+
+  relative_angle = acos(relative_angle)*180/PI;
+    
+    Eigen::Matrix3d skew;
+    skew << 0, -rot_axis_local_frame(2), rot_axis_local_frame(1),
+      rot_axis_local_frame(2), 0, -rot_axis_local_frame(0),
+      -rot_axis_local_frame(1), rot_axis_local_frame(0), 0;
+	      	       		  
+    double rel_angle_scaled = fabs( correction_vel(relative_angle) ); 
+    std::cout<<"rel_angle_scaled"<<rel_angle_scaled<<std::endl;
+    // Rodrigues Formula
+    Eigen::Matrix3d correction_rotation_temp = Eigen::Matrix3d::Identity() + skew*sin( rel_angle_scaled ) + skew*skew*( 1 - cos( rel_angle_scaled )*cos( rel_angle_scaled ) );
+    
+    Rotation correction_rotation;
+    for ( int i = 0; i < 3; ++i )
+      for ( int j = 0; j < 3; ++j)
+	correction_rotation( i, j ) = correction_rotation_temp( i, j );
+    
+    correction_frame.M = correction_rotation;
+    return false;
+    
+  }
+  
+  else{
+    correction_frame = Frame::Identity();
+    std::cout << "correction complete!" << std::endl;
+    return true;
+  }
+}  
+}
+
+
+}
+
+
+void WamMove::correct_x_during_cutting( const Frame& tip_frame,
+					Frame& correction_frame ){
+
+  
 }

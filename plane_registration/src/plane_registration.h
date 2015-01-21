@@ -58,14 +58,13 @@ public:
   //******************** Plane Registration ************************
 
 
-  // FUNCTION RESPONSIBLE FOR ESTIMATION
-  // Estimates the angle between vector formed by motion ( if ptsloc = 1, then the angle between path along local Y and local Y axis (rotation around local X, if ptsloc = 2, then rotation around Y )
-  void orientation_error_estimate();
 
-
-  // In local probing stage, if assume base frame and plane doesn't move during this step, cutter is commanded to move in two directions each of 0.2m, this gives two vectors which cross product is the normal of the plane. The cross product of this normal with the cutter normal provides a roataion axis for the two normals to align
+  // In LOCAL PROBING stage, if assume base frame and plane doesn't move during this step, cutter is commanded to move in two directions each of 0.2m, this gives two vectors which cross product is the normal of the plane. The cross product of this normal with the cutter normal provides a roataion axis for the two normals to align
   void local_probing(); 
 		      
+
+  // during cutting phase, estimate and publish a unit vector along the trajectory of the cutter (used for correction around cutter y axis)  
+  void estimate_during_cutting();
 
   // Estimate a average unit vector according to the cutter's trajectory
   Eigen::Vector3d estimate_trj_unit_vector( Eigen::Vector3d& start_point,
@@ -75,12 +74,6 @@ public:
 
   void remove_matrix_column(Eigen::MatrixXd& matrix, unsigned int colToRemove);
 
- 
-  // Provide a vector pointing along the motion of the cutter
-  double average_plane_orientation1D( const Eigen::Vector2d& startPoint,
-				      const Eigen::Vector2d& currPoint,
-				      std::vector<double>& plane_ori_vector,
-				      const int plane_ori_est_size );
 
   // Calculate average of 'data' collected over time using a window size of 'window_size'
   double average( const double data,
@@ -130,6 +123,7 @@ public:
   boost::shared_ptr<ChainIkSolverPos> ik_solver_;
 
   // -------- plane registration -----------
+  
   ros::Publisher pub_roterr_est_;
   ros::Subscriber sub_plreg_pts_;
   ros::Subscriber sub_key_;
@@ -158,6 +152,9 @@ public:
   // ptsloc = 2: obtaining second vector on plane
   // ptsloc = 3: finished with motion, start calculating plane normal
   // ptsloc = -1: transition from first vector motion to second, reinitial startPoint
+  
+  // during cutting:
+  // ptsloc = 1: data can be used for estimation
   int ptsloc;
   int ptsloclast;
   double error_last;
@@ -165,6 +162,7 @@ public:
   
   // for local probing step
   ros::Publisher pub_local_probing_normal_est_;
+  
   Eigen::MatrixXd unit_vector_history_1;
   Eigen::MatrixXd unit_vector_history_2;
   
@@ -172,7 +170,17 @@ public:
   Eigen::Vector3d plane_vec_2;
 
   geometry_msgs::Vector3 local_probing_est;
-  geometry_msgs::Vector3 local_probing_est_last;
+
+  // for during cutting step
+  ros::Publisher pub_traj_unit_vector_;
+
+  Eigen::Vector3d trajectory_unit_vector;
+  Eigen::Vector3d trajectory_unit_vector_last;
+  Eigen::MatrixXd trajectory_unit_vector_history;
+  geometry_msgs::Vector3 trajectory_unit_vector_msg;
+
+  
+  double last_reset_start_point_time;
   //----------------------------------------
 };
 
