@@ -44,6 +44,7 @@ WamMove:: WamMove(ros::NodeHandle* node):
 
     probing_est_normal << 0, 0, 0;
     plreg_process_cue.data = 0;
+    start_hybrid_time = ros::Time::now().toSec();
   }
   
 WamMove::~WamMove(){}
@@ -95,15 +96,21 @@ void WamMove::update()
       // Cutting Step
       
       if ( ctrl_type_ == CTRL_HYBRID ){
-
-	// move along cutter x axis
-	eevel = cmd_frame_.M.UnitX();
 	
-	correct_x_during_cutting( tip_frame_, 
-				  last_hpf_cmd, 
-				  cmd_v,
-				  correction_frame );
-
+	if ( !correct_x_during_cutting( tip_frame_, 
+					last_hpf_cmd, 
+					cmd_v,
+					correction_frame ) ){
+	// move along cutter x axis if not correcting
+	eevel = cmd_frame_.M.UnitX();
+	  
+	}
+	     
+	// give 6 secs of data collection and estimation time before activating correction
+	if ( ros::Time::now().toSec() - start_hybrid_time < 6){
+	  eevel = cmd_frame_.M.UnitX();
+	  correction_frame = Frame::Identity();
+	}
 	plreg_process_cue.data = 2;
       }
       
@@ -209,6 +216,7 @@ void WamMove::cb_key(const std_msgs::String &msg)
     else if (msg.data == "h"){// start moving with control
       ctrl_hybrid();
       initialize_ready = true;
+      start_hybrid_time = ros::Time::now().toSec();
     }
     else if (msg.data == "xn"){
       inject_noise = X_NOISE;
@@ -343,7 +351,7 @@ void WamMove::ctrl_ready()
 void WamMove::ctrl_errorpos()
   {
     ctrl_type_ = CTRL_ERROR_POSE;
-
+ 
     fk_solver_->JntToCart( jnt_pos_, tip_frame_ );
 
     // sync cmd frame
@@ -455,11 +463,11 @@ bool WamMove::local_probing( const Frame& tip_frame,
 	    cutter_linear_vel = cmd_frame.M.UnitX();
 
 	    // for informing plane_registration to reset start point during transition from vector 1 motion to vector 2
-	    if ( current_cutter_z < starting_point[2] - 0.027 && current_cutter_z > starting_point[2] - 0.03 ){
+	    if ( current_cutter_z < starting_point[2] - 0.017 && current_cutter_z > starting_point[2] - 0.02 ){
 	      plreg_msg.data = -1;
 	      std::cout << "first vector ready" <<std::endl;
 	    }
-	    if ( current_cutter_z < starting_point[2] - 0.03 ){
+	    if ( current_cutter_z < starting_point[2] - 0.02 ){
 	      first_vector_ready = true;
 	    }
 	  }
@@ -477,7 +485,7 @@ bool WamMove::local_probing( const Frame& tip_frame,
 	    
 	    double current_cutter_y = tip_frame_.p[1];
 	    cutter_linear_vel = cmd_frame.M.UnitY();
-	    if ( current_cutter_y < starting_point[1] - 0.03 ){
+	    if ( current_cutter_y < starting_point[1] - 0.02 ){
 	      second_vector_ready = true;
 	      std::cout << "second vector ready" << std::endl;
 	    }
@@ -534,7 +542,7 @@ bool WamMove::local_probing( const Frame& tip_frame,
 
 
 
-void WamMove::correct_x_during_cutting( const Frame& tip_frame,
+bool WamMove::correct_x_during_cutting( const Frame& tip_frame,
 					const double& last_hpf_cmd,
 				        double &curr_hpf_cmd,
 					Frame& correction_frame){
@@ -576,11 +584,13 @@ void WamMove::correct_x_during_cutting( const Frame& tip_frame,
       curr_hpf_cmd = 0;
       // HACK! For show only, remove this when in use
       inject_noise = NO_NOISE;
+      return true;
     }
     if ( start_correcting_x == false ){
       correction_frame = Frame::Identity();
       // HACK!
       inject_noise = inject_noise_last;
+      return false;
     }
 
   }

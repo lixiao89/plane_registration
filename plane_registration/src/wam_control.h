@@ -94,7 +94,7 @@ private:
 		      Frame& correction_frame );
   
   // performs correction during execution of the cutting task (align cutter x axis)
-  void correct_x_during_cutting( const Frame& tip_frame,
+  bool correct_x_during_cutting( const Frame& tip_frame,
 				 const double& last_hpf_cmd,
 				 double& curr_hpf_cmd,
 				 Frame& correction_frame );
@@ -229,6 +229,8 @@ private:
   ros::Subscriber sub_traj_unit_vector_;
   Eigen::Vector3d traj_unit_vector;
   bool start_correcting_x;
+
+  double start_hybrid_time;
 
   // for telling plane_registration node if current cutter position can be used to estimate plane vector and what use of current motion.
   // corresponeds to 'ptsloc'

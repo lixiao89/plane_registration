@@ -7,7 +7,8 @@ PlaneRegistration::PlaneRegistration( ros::NodeHandle* node ): node_(node),
 							       reset_start_point( 0 ),
                                                                error_last( 0 ),
                                                                ptsloclast( 0 ),
-							       plreg_process_cue(0){
+							       plreg_process_cue(0),
+							       plreg_process_cue_last(0){
     // pubs 
     pub_roterr_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/oriErr", 10);
     pub_local_probing_normal_est_ = node->advertise<geometry_msgs::Vector3>("/plreg/local_probing_est", 10);
@@ -104,7 +105,10 @@ void PlaneRegistration::cb_ptsloc( const std_msgs::Int32 &msg )
 void PlaneRegistration::cb_plreg_trigger( const std_msgs::Int32 &msg ){
 
   plreg_process_cue = msg.data;
+  if ( plreg_process_cue !=  plreg_process_cue_last )
+    reset_start_point = 1;
 
+  plreg_process_cue_last = plreg_process_cue;
 }
 
 // ******************** Plane Registration ***********************************
@@ -173,7 +177,7 @@ void PlaneRegistration::local_probing(){
     pub_local_probing_normal_est_.publish( local_probing_est );
     
   }
-  
+
    
 }
 
@@ -245,7 +249,7 @@ Eigen::Vector3d PlaneRegistration::estimate_trj_unit_vector( Eigen::Vector3d& st
 
   Eigen::Vector3d avg_vector = unit_vector_history.rowwise().mean();
 
-  return avg_vector;
+  return avg_vector / avg_vector.norm();;
 
 }
 

@@ -164,7 +164,7 @@ public:
   // plreg_process_cue = 1: local probing
   // plreg_process_cue = 2: cutting
   int plreg_process_cue;
-  
+  int plreg_process_cue_last;
   // for local probing step
   ros::Publisher pub_local_probing_normal_est_;
   
