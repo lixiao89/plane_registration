@@ -1,0 +1,78 @@
+#!/usr/bin/env python
+
+# Zihan Chen
+# 2014-12-04
+# Brief: Hybrid Position/Force controller
+
+import rospy
+import tf
+import math
+
+from std_msgs.msg import String
+from std_msgs.msg import Bool
+from visualization_msgs.msg import Marker
+from geometry_msgs.msg import Point
+from geometry_msgs.msg import WrenchStamped
+from sensor_msgs.msg import Joy
+from PyKDL import *
+from urdf_parser_py.urdf import URDF
+
+class DataExtraction():
+    def __init__(self):
+        rospy.init_node('data_extraction_node')
+        self.freq = 100
+        self.rate = rospy.Rate(self.freq)  # 100 hz
+
+        # sub
+        self.sub_jr3 = rospy.Subscriber('/jr3/wrench', WrenchStamped, self.cb_jr3)
+
+        # tf 
+        self.ler = tf.TransformListener()  # listener
+        self.ber = tf.TransformBroadcaster() # broadcaster
+
+        # datas
+        self.cmdfrm = Frame()
+        self.wrench = Wrench()
+
+        self.cmdtwist = Twist()
+        self.urdf = rospy.get_param('/wam/robot_description')
+        print self.urdf
+        
+        self.robot = URDF()
+        self.robot = self.robot.from_xml_string(self.urdf)
+        self.chain = self.robot.get_chain('base_link',
+                                          'cutter_tip_link')
+        self.fk = ChainFkSolverPos_recursive(self.chain)
+        self.jointAngles = JntArrary(6)
+        self.tool_frame = Frame()
+        self.fk.JntToCart()
+        print self.chain
+        pass
+
+    def cb_jr3(self, msg):
+        self.wrench.force = Vector(msg.wrench.force.x,
+                                   msg.wrench.force.y,
+                                   msg.wrench.force.z)
+        self.wrench.torque = Vector(msg.wrench.torque.x,
+                                    msg.wrench.torque.y,
+                                    msg.wrench.torque.z)
+        pass
+
+
+    def run(self):
+        while not rospy.is_shutdown():
+
+            # print cmdTrans
+            self.rate.sleep()
+
+
+
+# Program starting point
+if __name__ == '__main__':
+    try:
+        print ".... Starting Hybrid Position/Force Controller ...."
+        data_ext = DataExtraction()
+        data_ext.run()
+    except rospy.ROSInterruptException:
+        pass
+   
